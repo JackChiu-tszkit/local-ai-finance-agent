@@ -1,0 +1,13 @@
+# 关闭 Streamlit 使用情况回传，避免本地财务应用向外发送统计信息。
+[browser]
+gatherUsageStats = false
+
+[server]
+fileWatcherType = "auto"
+
+[theme]
+base = "light"
+primaryColor = "#0F6E56"
+backgroundColor = "#F7F6F2"
+secondaryBackgroundColor = "#E7F0EC"
+textColor = "#1F2933"
