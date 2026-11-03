@@ -93,6 +93,11 @@ TRANSACTION_TYPE_LABELS = {
 }
 
 
+def merchant_key(name: str) -> str:
+    """商户记忆用的比较键。忽略大小写和多余空格，不改变展示名称。"""
+    return " ".join(name.casefold().split())
+
+
 class ConfigError(ValueError):
     """配置内容无法使用时抛出。"""
 

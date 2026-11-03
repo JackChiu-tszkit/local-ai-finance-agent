@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS merchant_memories (
+    id INTEGER PRIMARY KEY,
+    merchant_key TEXT NOT NULL UNIQUE,
+    category_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date
 ON transactions (transaction_date);
 

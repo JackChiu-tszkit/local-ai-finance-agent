@@ -23,6 +23,7 @@ from config import (
     INCOME_CATEGORIES,
     MERCHANT_CATEGORIES,
     Settings,
+    merchant_key,
     validate_ollama_host,
 )
 
@@ -650,6 +651,21 @@ def phrase_in_text(text: str, phrase: str | None) -> bool:
     if not phrase:
         return False
     return phrase.casefold() in text.casefold()
+
+
+def apply_merchant_memory(draft: TransactionDraft, memories: dict[str, str]) -> TransactionDraft:
+    """用用户确认过的商户分类覆盖建议分类。没有记忆时保持原分类。"""
+    if draft.transaction_type != "expense" or not draft.merchant:
+        return draft
+    learned = memories.get(merchant_key(draft.merchant))
+    if learned not in EXPENSE_CATEGORIES:
+        return draft
+    if draft.category != learned:
+        draft.category = learned
+        note = "已按你之前确认的商户分类填写。"
+        if note not in draft.warnings:
+            draft.warnings.append(note)
+    return draft
 
 
 def categories_for_type(transaction_type: str | None) -> list[str]:

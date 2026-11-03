@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import CURRENCY_EXPONENTS, TRANSACTION_TYPE_LABELS
+from config import CURRENCY_EXPONENTS, EXPENSE_CATEGORIES, TRANSACTION_TYPE_LABELS, merchant_key
 from database import (
     delete_budget,
     get_category_by_name,
@@ -26,12 +26,14 @@ from database import (
     insert_transaction,
     list_budgets,
     list_categories,
+    list_merchant_memories,
     list_transactions,
     soft_delete_transaction,
     sum_refunds_for,
     restore_transaction,
     update_transaction,
     upsert_budget,
+    upsert_merchant_memory,
 )
 from difflib import SequenceMatcher
 
@@ -162,6 +164,12 @@ def _period_key(iso_date: str, frequency: str) -> str:
     raise ValueError("统计周期只支持 day、week 或 month。")
 
 
+def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    """按公历月份平移。delta 为负表示往前。"""
+    index = year * 12 + (month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
 def _month_bounds(year: int, month: int) -> tuple[str, str]:
     start = date(year, month, 1)
     if month == 12:
@@ -187,6 +195,43 @@ def _excel_safe(value: object) -> object:
     return value
 
 
+def _has_currency_expense(rows: list[dict], currency: str) -> bool:
+    return any(
+        row["currency"] == currency and row["transaction_type"] == "expense" and not row.get("is_deleted")
+        for row in rows
+    )
+
+
+def _spent_by_category(rows: list[dict], currency: str) -> dict[str, int]:
+    """同一币种下各分类的净支出。退款冲减原交易分类。"""
+    names: list[str] = []
+    for row in rows:
+        if row["currency"] != currency:
+            continue
+        if row["transaction_type"] == "expense" and row.get("category_name"):
+            name = str(row["category_name"])
+        elif row["transaction_type"] == "refund" and row.get("original_category_name"):
+            name = str(row["original_category_name"])
+        else:
+            continue
+        if name not in names:
+            names.append(name)
+    return {name: net_spent_minor(rows, currency, name) for name in names}
+
+
+def _merchant_display(rows: list[dict], currency: str) -> dict[str, str]:
+    """返回商户比较键和最近一笔的展示名称。"""
+    found: dict[str, str] = {}
+    for row in rows:
+        if row["currency"] != currency or row["transaction_type"] != "expense":
+            continue
+        merchant = (row.get("merchant") or "").strip()
+        if not merchant:
+            continue
+        found[merchant_key(merchant)] = merchant
+    return found
+
+
 def net_spent_minor(rows: list[dict], currency: str, category_name: str | None = None) -> int:
     """计算净支出。退款冲减原交易分类，不计入工资或投资收益。"""
     total = 0
@@ -209,6 +254,116 @@ class FinanceService:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         init_database(self.db_path)
+
+    def merchant_memories(self) -> dict[str, str]:
+        """返回商户比较键到分类名的映射。内置商户表不在这里。"""
+        with get_connection(self.db_path) as connection:
+            rows = list_merchant_memories(connection)
+        return {row["merchant_key"]: row["category_name"] for row in rows}
+
+    def remember_merchant(
+        self,
+        merchant: str | None,
+        category_name: str,
+        transaction_type: str,
+    ) -> None:
+        """用户确认支出后记住商户分类。没有商户、或不是支出时不写。"""
+        if transaction_type != "expense" or not merchant or not merchant.strip():
+            return
+        if category_name not in EXPENSE_CATEGORIES:
+            return
+        key = merchant_key(merchant)
+        if not key:
+            return
+        with get_connection(self.db_path) as connection:
+            upsert_merchant_memory(connection, merchant_key=key, category_name=category_name)
+        logger.info("merchant memory saved category=%s", category_name)
+
+    def recategorize(self, transaction_ids: list[int], category_name: str) -> int:
+        """把预览中的支出改到新分类。调用前必须已经让用户确认。"""
+        if category_name not in EXPENSE_CATEGORIES:
+            raise ValueError("只能把支出改到已有的支出分类。")
+        updated = 0
+        for transaction_id in transaction_ids:
+            with get_connection(self.db_path) as connection:
+                row = get_transaction(connection, transaction_id)
+            if row is None or row["is_deleted"] or row["transaction_type"] != "expense":
+                continue
+            if row.get("category_name") == category_name:
+                continue
+            self.update_transaction(
+                transaction_id,
+                transaction_date=date.fromisoformat(row["transaction_date"]),
+                amount=from_minor(int(row["amount_minor"]), row["currency"]),
+                currency=row["currency"],
+                transaction_type="expense",
+                category_name=category_name,
+                description=row.get("description"),
+                merchant=row.get("merchant"),
+                account_name=row.get("account_name"),
+                original_transaction_id=None,
+                allow_duplicate=True,
+            )
+            self.remember_merchant(row.get("merchant"), category_name, "expense")
+            updated += 1
+        return updated
+
+    def spending_insights(self, today: date) -> list[str]:
+        """根据本人历史给出提醒。比较和阈值都在这里完成，不交给模型。"""
+        notes: list[str] = []
+        current_rows = self._month_rows(today.year, today.month)
+        previous: list[list[dict]] = []
+        year, month = today.year, today.month
+        for _step in range(3):
+            year, month = shift_month(year, month, -1)
+            previous.append(self._month_rows(year, month))
+        currencies: list[str] = []
+        for row in current_rows:
+            if row["currency"] not in currencies:
+                currencies.append(row["currency"])
+        for currency in currencies:
+            current_spent = _spent_by_category(current_rows, currency)
+            previous_spent = [_spent_by_category(rows, currency) for rows in previous]
+            active_months = sum(1 for rows in previous if _has_currency_expense(rows, currency))
+            if active_months >= 2:
+                floor = to_minor(Decimal("100"), currency)
+                for name, spent in current_spent.items():
+                    if spent <= 0:
+                        continue
+                    average = sum((item.get(name, 0) for item in previous_spent), Decimal(0)) / Decimal(3)
+                    if average <= 0:
+                        continue
+                    if Decimal(spent) >= average * Decimal("1.5") and Decimal(spent) - average >= Decimal(floor):
+                        notes.append(
+                            f"本月{name}净支出 {format_money(spent, currency)}，"
+                            f"高于前三个月平均 {format_money(int(average), currency)}。"
+                            "这是根据你自己的历史记录计算的提醒。"
+                        )
+            other_count = sum(
+                1
+                for row in current_rows
+                if row["currency"] == currency
+                and row["transaction_type"] == "expense"
+                and row.get("category_name") == "其他"
+            )
+            if other_count >= 3:
+                notes.append(f"本月有 {other_count} 笔 {currency} 支出归在「其他」，可以让记账助手帮你归类。")
+            current_merchants = _merchant_display(current_rows, currency)
+            for key, display in current_merchants.items():
+                hits = sum(1 for rows in previous if key in _merchant_display(rows, currency))
+                if hits >= 2:
+                    notes.append(
+                        f"{display} 在本月以及之前三个月里的至少两个月都有支出。"
+                        "这只是重复出现的提醒，不会自动记账。"
+                    )
+        return notes[:8]
+
+    def _month_rows(self, year: int, month: int) -> list[dict]:
+        start, end = _month_bounds(year, month)
+        return self.list_transaction_rows(
+            start_date=date.fromisoformat(start),
+            end_date=date.fromisoformat(end),
+        )
 
     def list_categories(self, category_type: str | None = None) -> list[dict]:
         with get_connection(self.db_path) as connection:

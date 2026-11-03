@@ -513,6 +513,61 @@ def delete_budget(connection: sqlite3.Connection, budget_id: int) -> None:
     )
 
 
+def upsert_merchant_memory(
+    connection: sqlite3.Connection,
+    *,
+    merchant_key: str,
+    category_name: str,
+) -> int:
+    """记住用户确认过的商户分类。审计只记录字段名，不记录商户原文。"""
+    timestamp = utc_now()
+    existing = connection.execute(
+        "SELECT id FROM merchant_memories WHERE merchant_key = ?",
+        (merchant_key,),
+    ).fetchone()
+    if existing:
+        connection.execute(
+            """
+            UPDATE merchant_memories
+            SET category_name = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (category_name, timestamp, existing["id"]),
+        )
+        memory_id = int(existing["id"])
+        action = "update"
+    else:
+        cursor = connection.execute(
+            """
+            INSERT INTO merchant_memories (merchant_key, category_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (merchant_key, category_name, timestamp, timestamp),
+        )
+        memory_id = int(cursor.lastrowid)
+        action = "create"
+    insert_audit(
+        connection,
+        entity_type="merchant_memory",
+        entity_id=memory_id,
+        action=action,
+        changed_fields=["category_name"],
+    )
+    return memory_id
+
+
+def list_merchant_memories(connection: sqlite3.Connection) -> list[dict]:
+    """读取全部商户分类记忆。"""
+    rows = connection.execute(
+        """
+        SELECT id, merchant_key, category_name, created_at, updated_at
+        FROM merchant_memories
+        ORDER BY id
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_audit_logs(connection: sqlite3.Connection, limit: int = 50) -> list[dict]:
     """读取最近的审计记录。"""
     rows = connection.execute(

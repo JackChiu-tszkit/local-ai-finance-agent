@@ -17,8 +17,10 @@ import plotly.graph_objects as go
 import streamlit as st
 from pydantic import ValidationError
 
+from agent import AgentResult, handle_user_message
 from ai_parser import (
     TransactionDraft,
+    apply_merchant_memory,
     list_installed_models,
     parse_transaction_text,
     today_in_timezone,
@@ -63,6 +65,12 @@ def ensure_state() -> None:
         st.session_state.pending = None
     if "transcript" not in st.session_state:
         st.session_state.transcript = ""
+    if "agent_messages" not in st.session_state:
+        st.session_state.agent_messages = []
+    if "agent_queue" not in st.session_state:
+        st.session_state.agent_queue = []
+    if "agent_proposal" not in st.session_state:
+        st.session_state.agent_proposal = None
 
 
 def current_settings() -> Settings:
@@ -85,6 +93,16 @@ def stage_draft(draft: TransactionDraft) -> None:
         "token": uuid.uuid4().hex,
         "draft": draft.model_dump(mode="json"),
     }
+
+
+def remember_saved(service: FinanceService, result: dict) -> None:
+    """确认保存后记住商户分类，供下一次解析使用。"""
+    service.remember_merchant(result.get("merchant"), result["category_name"], result["transaction_type"])
+
+
+def stage_with_memory(service: FinanceService, draft: TransactionDraft) -> None:
+    """单次解析也使用已经记住的商户分类。"""
+    stage_draft(apply_merchant_memory(draft, service.merchant_memories()))
 
 
 def try_amount(text: str) -> Decimal | None:
@@ -365,6 +383,7 @@ def render_pending(service: FinanceService) -> None:
         return
     st.session_state.saved_tokens.append(token)
     st.session_state.saved_tokens = st.session_state.saved_tokens[-200:]
+    remember_saved(service, result)
     st.session_state.pending = None
     st.session_state.flash = f"已保存，交易编号 {transaction_id}。"
     st.rerun()
@@ -392,7 +411,7 @@ def page_add(service: FinanceService) -> None:
                     default_currency=settings.default_currency,
                     settings=settings,
                 )
-                stage_draft(draft)
+                stage_with_memory(service, draft)
     with receipt_tab:
         image = st.file_uploader("上传 PNG、JPG 或 JPEG", type=["png", "jpg", "jpeg"])
         st.caption("图片只发送到设置中的 Ollama 地址，默认是本机，不会使用外部视觉 API。")
@@ -416,7 +435,7 @@ def page_add(service: FinanceService) -> None:
                     else:
                         st.error(f"收据识别失败：{exc}")
                 else:
-                    stage_draft(draft)
+                    stage_with_memory(service, draft)
     with voice_tab:
         st.caption("语音在本机转成文字，再使用和键盘输入相同的解析与确认流程。")
         audio_file = st.file_uploader(
@@ -461,7 +480,7 @@ def page_add(service: FinanceService) -> None:
                 else:
                     st.session_state.transcript = transcript
                     st.session_state.transcript_dirty = True
-                    stage_draft(draft)
+                    stage_with_memory(service, draft)
                     st.rerun()
         if reparse_clicked:
             if not edited.strip():
@@ -474,7 +493,7 @@ def page_add(service: FinanceService) -> None:
                     settings=settings,
                 )
                 draft.source = "voice"
-                stage_draft(draft)
+                stage_with_memory(service, draft)
     with manual_tab:
         st.write("不使用模型时，可以手动填写。保存前同样需要点击确认。")
         if st.button("开始手动记账"):
@@ -538,10 +557,117 @@ def render_charts(summary) -> None:
     st.plotly_chart(line, width="stretch")
 
 
+def _queue_item(draft: TransactionDraft) -> dict:
+    return {"token": uuid.uuid4().hex, "draft": draft.model_dump(mode="json")}
+
+
+def page_agent(service: FinanceService) -> None:
+    """对话式记账。提问和修改草稿都不会直接写入数据库。"""
+    st.header("记账助手")
+    st.caption("可以连续补充草稿，也可以询问本机账本。金额由数据库计算。点击确认后才入账。")
+    settings = current_settings()
+    today = current_today()
+    for message in st.session_state.agent_messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    proposal = st.session_state.agent_proposal
+    if proposal:
+        st.warning(proposal["summary"])
+        st.dataframe(proposal["preview"], width="stretch", hide_index=True)
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            if st.button("确认修改这些分类", type="primary"):
+                changed = service.recategorize(proposal["transaction_ids"], proposal["category_name"])
+                st.session_state.agent_proposal = None
+                st.session_state.agent_messages.append(
+                    {"role": "assistant", "content": f"已修改 {changed} 笔支出的分类。"}
+                )
+                st.session_state.agent_messages = st.session_state.agent_messages[-40:]
+                st.rerun()
+        with cancel_col:
+            if st.button("取消这次修改"):
+                st.session_state.agent_proposal = None
+                st.session_state.agent_messages.append({"role": "assistant", "content": "已取消，账本没有改动。"})
+                st.rerun()
+
+    queue = st.session_state.agent_queue
+    if queue:
+        st.subheader(f"待确认 {1} / {len(queue)}")
+        try:
+            draft = TransactionDraft.model_validate(queue[0]["draft"])
+        except ValidationError:
+            st.session_state.agent_queue = queue[1:]
+            st.error("一条草稿无法读取，已跳过。")
+            st.rerun()
+        result = render_editor(
+            service,
+            prefix=f"agent_{queue[0]['token']}",
+            initial=initial_from_draft(draft),
+            submit_label="确认保存这一笔",
+        )
+        if st.button("取消当前草稿"):
+            st.session_state.agent_queue = queue[1:]
+            st.session_state.agent_messages.append({"role": "assistant", "content": "已取消当前草稿，没有写入。"})
+            st.rerun()
+        if result is not None:
+            try:
+                transaction_id = service.create_transaction(**result)
+            except DuplicateTransactionError:
+                st.error("保存前又检测到相似交易，请勾选确认后重新保存。")
+                return
+            except (ValueError, KeyError) as exc:
+                st.error(str(exc))
+                return
+            remember_saved(service, result)
+            st.session_state.agent_queue = st.session_state.agent_queue[1:]
+            st.session_state.agent_messages.append(
+                {"role": "assistant", "content": f"已保存，交易编号 {transaction_id}。"}
+            )
+            st.session_state.agent_messages = st.session_state.agent_messages[-40:]
+            st.session_state.flash = f"已保存，交易编号 {transaction_id}。"
+            st.rerun()
+
+    prompt = st.chat_input("例如：午饭花了80元，地铁花了30元。也可以问这个月餐饮花了多少。")
+    if not prompt:
+        return
+    pending = None
+    if st.session_state.agent_queue:
+        try:
+            pending = TransactionDraft.model_validate(st.session_state.agent_queue[0]["draft"])
+        except ValidationError:
+            pending = None
+    outcome: AgentResult = handle_user_message(
+        prompt,
+        today=today,
+        default_currency=settings.default_currency,
+        service=service,
+        pending=pending,
+        memories=service.merchant_memories(),
+    )
+    st.session_state.agent_messages.append({"role": "user", "content": prompt})
+    st.session_state.agent_messages.append({"role": "assistant", "content": outcome.reply})
+    st.session_state.agent_messages = st.session_state.agent_messages[-40:]
+    if outcome.new_drafts:
+        st.session_state.agent_queue.extend(_queue_item(item) for item in outcome.new_drafts)
+    if outcome.amended_draft is not None and st.session_state.agent_queue:
+        st.session_state.agent_queue[0] = _queue_item(outcome.amended_draft)
+    if outcome.proposal is not None:
+        st.session_state.agent_proposal = {
+            "summary": outcome.proposal.summary,
+            "category_name": outcome.proposal.category_name,
+            "transaction_ids": outcome.proposal.transaction_ids,
+            "preview": outcome.proposal.preview,
+        }
+    st.rerun()
+
+
 def page_dashboard(service: FinanceService) -> None:
     st.header("财务总览")
     today = current_today()
     render_budget_alerts(service, today)
+    for note in service.spending_insights(today):
+        st.warning(note)
     st.caption("不同币种分开统计，不进行汇率换算。支出已扣除同期退款。")
     categories = service.list_categories()
     category_labels = ["全部"] + [f"{item['name']}（{'支出' if item['category_type']=='expense' else '收入'}）" for item in categories]
@@ -907,7 +1033,7 @@ def render_sidebar() -> str:
         st.sidebar.warning(f"未在本机找到文本模型 {detail}。简单句式仍可用规则解析。")
     return st.sidebar.radio(
         "功能",
-        ["财务总览", "新增交易", "交易记录", "预算设置", "系统设置"],
+        ["财务总览", "记账助手", "新增交易", "交易记录", "预算设置", "系统设置"],
     )
 
 
@@ -919,6 +1045,7 @@ def main() -> None:
     page = render_sidebar()
     pages = {
         "财务总览": page_dashboard,
+        "记账助手": page_agent,
         "新增交易": page_add,
         "交易记录": page_history,
         "预算设置": page_budget,
