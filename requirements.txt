@@ -1,6 +1,7 @@
 # 本地智能记账依赖。全部在本机运行，不包含付费云 API 客户端。
-# 界面
+# 界面。Windows 上由 launch_app.py 包进桌面窗口。
 streamlit>=1.40,<2
+pywebview>=5.3,<7
 # 交互式图表
 plotly>=5.24,<7
 # 统计分析与导出

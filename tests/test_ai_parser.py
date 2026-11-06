@@ -26,6 +26,37 @@ from voice_parser import VoiceError, transcribe_and_parse, transcribe_audio, val
 TODAY = date(2026, 11, 2)
 
 
+def test_ascii_thousands_separators_stay_one_amount() -> None:
+    """英文逗号按千分位读取，不能只留下逗号一侧的数字。"""
+    groceries = parse_with_rules("买菜花了1,200元", today=TODAY, default_currency="NOK")
+    assert groceries.amount == Decimal("1200")
+    assert groceries.currency == "CNY"
+
+    fullwidth = parse_with_rules("买菜花了1，200元", today=TODAY, default_currency="NOK")
+    assert fullwidth.amount == Decimal("1200")
+    assert fullwidth.currency == "CNY"
+
+    paid = parse_with_rules("paid $1,000", today=TODAY, default_currency="NOK")
+    assert paid.amount == Decimal("1000")
+    assert paid.currency == "USD"
+
+    cents = parse_with_rules("买菜花了1,200.50元", today=TODAY, default_currency="NOK")
+    assert cents.amount == Decimal("1200.50")
+    assert cents.currency == "CNY"
+
+    long_amount = parse_with_rules("转账12,345,678,901.25元", today=TODAY, default_currency="NOK")
+    assert long_amount.amount == Decimal("12345678901.25")
+
+    bare = parse_with_rules("花了1,200", today=TODAY, default_currency="NOK")
+    assert bare.amount == Decimal("1200")
+
+    not_thousands = parse_with_rules("花了1,2元", today=TODAY, default_currency="NOK")
+    assert not_thousands.amount == Decimal("2")
+
+    plain = parse_with_rules("花了120元", today=TODAY, default_currency="NOK")
+    assert plain.amount == Decimal("120")
+
+
 def test_chinese_integers() -> None:
     assert parse_chinese_integer("三百") == 300
     assert parse_chinese_integer("三百五十") == 350

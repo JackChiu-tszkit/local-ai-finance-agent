@@ -155,9 +155,14 @@ _CURRENCY_PATTERN = re.compile(
     r"美元|欧元|英镑|克朗|\bkroner\b|块钱|元|块|[€£$]|\bkr\b",
     re.IGNORECASE,
 )
-_ARABIC_AT_END = re.compile(r"(\d+(?:\.\d{1,2})?)\s*$")
+# 千分位形式必须写在纯数字前面，否则 "1,200.50" 会先被读成 1。
+# 小数只跟在完整的一组数字后面。逗号只在转成 Decimal 时从这一段去掉。
+_ARABIC_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+_ARABIC_AT_END = re.compile(rf"({_ARABIC_NUMBER})\s*$")
 _CHINESE_AT_END = re.compile(r"([零〇一二两三四五六七八九十百千万]+)\s*$")
-_ARABIC_AT_START = re.compile(r"^\s*(\d+(?:\.\d{1,2})?)")
+_ARABIC_AT_START = re.compile(rf"^\s*({_ARABIC_NUMBER})")
+# 12,345,678,901.25 有 17 个字符，16 个字符的窗口会裁掉开头。
+_AMOUNT_LOOKAROUND = 32
 _ANCHOR = re.compile(r"花了|花费|支付|付了|消费了|收到|退回了|退回|退了|退款|spent|paid")
 _FULL_DATE = re.compile(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})")
 _MONTH_DAY = re.compile(r"(\d{1,2})月(\d{1,2})[日号]")
@@ -339,16 +344,21 @@ def _currency_code(token: str) -> str:
     return mapping[folded]
 
 
+def _decimal_from_arabic(token: str) -> Decimal:
+    """把匹配到的数字段转成 Decimal。千分位逗号只从这一段去掉。"""
+    return Decimal(token.replace(",", ""))
+
+
 def _number_near_currency(text: str, start: int, end: int, token: str) -> Decimal | None:
     """从币种词前方或符号后方提取数字。找不到时返回空。"""
     if token in {"$", "€", "£"}:
-        forward = _ARABIC_AT_START.search(text[end:end + 16])
+        forward = _ARABIC_AT_START.search(text[end:end + _AMOUNT_LOOKAROUND])
         if forward:
-            return Decimal(forward.group(1))
-    window = text[max(0, start - 16):start]
+            return _decimal_from_arabic(forward.group(1))
+    window = text[max(0, start - _AMOUNT_LOOKAROUND):start]
     arabic = _ARABIC_AT_END.search(window)
     if arabic:
-        return Decimal(arabic.group(1))
+        return _decimal_from_arabic(arabic.group(1))
     chinese = _CHINESE_AT_END.search(window)
     if chinese:
         value = parse_chinese_integer(chinese.group(1))
@@ -371,8 +381,8 @@ def extract_amounts(text: str) -> list[AmountHit]:
         hits.append(AmountHit(amount, _currency_code(match.group()), match.start()))
     if hits:
         return hits
-    for match in re.finditer(r"\d+(?:\.\d{1,2})?", text):
-        hits.append(AmountHit(Decimal(match.group()), None, match.start()))
+    for match in re.finditer(_ARABIC_NUMBER, text):
+        hits.append(AmountHit(_decimal_from_arabic(match.group()), None, match.start()))
     return hits
 
 
