@@ -1,4 +1,4 @@
-"""数据库约束、事务和审计测试。"""
+"""Tests for database constraints, transactions, and the audit log."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from finance_service import FinanceService
 
 
 def test_schema_enforces_foreign_keys_and_indexes(tmp_path: Path) -> None:
-    """外键必须在每条连接上启用，常用查询字段要有索引。"""
+    """Foreign keys are enabled on every connection, and common query columns are indexed."""
     db_path = tmp_path / "finance.db"
     init_database(db_path)
     connection = connect(db_path)
@@ -48,7 +48,7 @@ def test_schema_enforces_foreign_keys_and_indexes(tmp_path: Path) -> None:
 
 
 def test_invalid_category_rolls_back(tmp_path: Path) -> None:
-    """非法外键会失败，并且不会留下半条交易。"""
+    """An invalid foreign key fails and does not leave a partial transaction."""
     db_path = tmp_path / "finance.db"
     init_database(db_path)
     with pytest.raises(sqlite3.IntegrityError):
@@ -61,7 +61,7 @@ def test_invalid_category_rolls_back(tmp_path: Path) -> None:
                     "currency": "NOK",
                     "transaction_type": "expense",
                     "category_id": 999999,
-                    "description": "不应该保存",
+                    "description": "should not be saved",
                     "merchant": None,
                     "account_id": None,
                     "original_transaction_id": None,
@@ -73,12 +73,12 @@ def test_invalid_category_rolls_back(tmp_path: Path) -> None:
 
 
 def test_transaction_rollback_keeps_previous_rows(tmp_path: Path) -> None:
-    """事务中途失败时，整次写入都回滚。"""
+    """If a transaction fails halfway, the whole write is rolled back."""
     db_path = tmp_path / "finance.db"
     init_database(db_path)
     with pytest.raises(RuntimeError):
         with get_connection(db_path) as connection:
-            category = get_category_by_name(connection, "餐饮", "expense")
+            category = get_category_by_name(connection, "Dining", "expense")
             assert category is not None
             insert_transaction(
                 connection,
@@ -88,14 +88,14 @@ def test_transaction_rollback_keeps_previous_rows(tmp_path: Path) -> None:
                     "currency": "CNY",
                     "transaction_type": "expense",
                     "category_id": category["id"],
-                    "description": "火锅",
+                    "description": "hotpot",
                     "merchant": None,
                     "account_id": None,
                     "original_transaction_id": None,
                     "source": "manual",
                 },
             )
-            raise RuntimeError("模拟失败")
+            raise RuntimeError("simulated failure")
     with get_connection(db_path) as connection:
         assert list_transactions(connection) == []
 
@@ -107,8 +107,8 @@ def test_soft_delete_hides_row_but_keeps_it(tmp_path: Path) -> None:
         amount=Decimal("88"),
         currency="CNY",
         transaction_type="expense",
-        category_name="交通",
-        description="地铁",
+        category_name="Transport",
+        description="metro",
         merchant=None,
         account_name=None,
         source="manual",
@@ -122,18 +122,18 @@ def test_soft_delete_hides_row_but_keeps_it(tmp_path: Path) -> None:
     service.restore_transaction(transaction_id)
     restored = service.list_transaction_rows()
     assert len(restored) == 1
-    assert restored[0]["description"] == "地铁"
+    assert restored[0]["description"] == "metro"
 
 
 def test_keyword_search_escapes_like_wildcards(tmp_path: Path) -> None:
-    """用户输入的百分号和下划线按字面搜索，不能匹配所有记录。"""
+    """A percent sign and underscore in the query are searched literally and do not match every row."""
     service = FinanceService(tmp_path / "finance.db")
     service.create_transaction(
         transaction_date=date(2026, 11, 2),
         amount=Decimal("10"),
         currency="CNY",
         transaction_type="expense",
-        category_name="购物",
+        category_name="Shopping",
         description="100%_off",
         merchant=None,
         account_name=None,
@@ -144,7 +144,7 @@ def test_keyword_search_escapes_like_wildcards(tmp_path: Path) -> None:
         amount=Decimal("11"),
         currency="CNY",
         transaction_type="expense",
-        category_name="购物",
+        category_name="Shopping",
         description="100Xoff",
         merchant=None,
         account_name=None,
@@ -157,7 +157,7 @@ def test_keyword_search_escapes_like_wildcards(tmp_path: Path) -> None:
 
 
 def test_sql_injection_is_stored_as_text(tmp_path: Path) -> None:
-    """恶意字符串只作为商户名称保存，不能破坏表结构。"""
+    """A hostile string is stored only as a merchant name and cannot change the table structure."""
     service = FinanceService(tmp_path / "finance.db")
     payload = "'); DROP TABLE transactions; --"
     service.create_transaction(
@@ -165,8 +165,8 @@ def test_sql_injection_is_stored_as_text(tmp_path: Path) -> None:
         amount=Decimal("15"),
         currency="NOK",
         transaction_type="expense",
-        category_name="其他",
-        description="正常描述",
+        category_name="Other",
+        description="ordinary description",
         merchant=payload,
         account_name=None,
         source="text",
@@ -177,17 +177,17 @@ def test_sql_injection_is_stored_as_text(tmp_path: Path) -> None:
 
 
 def test_audit_log_does_not_copy_financial_values(tmp_path: Path) -> None:
-    """审计日志只记录字段名，不复制金额和商户。"""
+    """The audit log stores field names and does not copy the amount or merchant."""
     service = FinanceService(tmp_path / "finance.db")
     service.create_transaction(
         transaction_date=date(2026, 11, 2),
         amount=Decimal("123.45"),
         currency="CNY",
         transaction_type="expense",
-        category_name="餐饮",
-        description="秘密午饭",
+        category_name="Dining",
+        description="secret lunch",
         merchant="SecretShop",
-        account_name="支付宝",
+        account_name="Vipps",
         source="manual",
     )
     with get_connection(service.db_path) as connection:
@@ -198,8 +198,8 @@ def test_audit_log_does_not_copy_financial_values(tmp_path: Path) -> None:
     assert "amount_minor" in combined
     assert "123.45" not in combined
     assert "SecretShop" not in combined
-    assert "秘密午饭" not in combined
-    assert "支付宝" not in combined
+    assert "secret lunch" not in combined
+    assert "Vipps" not in combined
 
 
 def test_settings_roundtrip(tmp_path: Path) -> None:

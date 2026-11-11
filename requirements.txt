@@ -1,19 +1,19 @@
-# 本地智能记账依赖。全部在本机运行，不包含付费云 API 客户端。
-# 界面。Windows 上由 launch_app.py 包进桌面窗口。
+# Local ledger dependencies. Everything runs on this computer. No paid cloud API client.
+# The interface. On Windows, launch_app.py opens it in a desktop window.
 streamlit>=1.40,<2
 pywebview>=5.3,<7
-# 交互式图表
+# Interactive charts
 plotly>=5.24,<7
-# 统计分析与导出
+# Analysis and export
 pandas>=2.2,<3
 openpyxl>=3.1,<4
-# 结构化数据校验
+# Structured validation
 pydantic>=2.9,<3
-# 访问本机 Ollama。仅连接用户配置的地址，默认是本机回环地址。
+# Talks only to the configured Ollama address, which defaults to localhost.
 httpx>=0.27,<1
-# 离线语音识别。默认 CPU，不要求 NVIDIA CUDA。
+# Offline speech recognition. CPU by default; NVIDIA CUDA is not required.
 faster-whisper>=1.0.3,<2
-# Windows 上 zoneinfo 需要时区数据库；macOS 自带，安装也无害。
+# Windows needs a timezone database for zoneinfo. Harmless on macOS, which already has one.
 tzdata>=2024.1
-# 单元测试
+# Unit tests
 pytest>=8.3,<9

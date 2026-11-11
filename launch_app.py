@@ -1,7 +1,8 @@
-"""在 Windows 上用桌面窗口打开本地记账。
+"""Open the local ledger in a desktop window on Windows.
 
-双击桌面图标时会执行这个文件。它只连接本机页面，不把账本发到网上。
-如果 8501 端口还没有服务，就在后台启动 Streamlit；关掉窗口时，只结束这次启动的服务。
+A desktop shortcut runs this file. It only connects to the page on this
+computer and does not send the ledger anywhere else. If port 8501 is free,
+Streamlit starts in the background. Closing the window stops only that process.
 """
 
 from __future__ import annotations
@@ -18,17 +19,18 @@ ROOT = Path(__file__).resolve().parent
 PORT = 8501
 URL = f"http://127.0.0.1:{PORT}"
 CREATE_NO_WINDOW = 0x08000000
+APP_TITLE = "Local ledger"
 
 
 def port_is_open(port: int) -> bool:
-    """检查本机端口是否已经有记账服务。"""
+    """Whether a ledger server is already listening on this computer."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def python_executable() -> Path:
-    """优先使用项目虚拟环境，避免点到系统里别的 Python。"""
+    """Prefer the project virtual environment over another Python on PATH."""
     scripts = ROOT / ".venv" / "Scripts"
     for name in ("pythonw.exe", "python.exe"):
         candidate = scripts / name
@@ -38,7 +40,7 @@ def python_executable() -> Path:
 
 
 def start_server() -> subprocess.Popen[bytes]:
-    """在后台启动本机页面，不弹出黑色命令行窗口。"""
+    """Start the local page in the background, without a console window."""
     command = [
         str(python_executable()),
         "-m",
@@ -62,19 +64,19 @@ def start_server() -> subprocess.Popen[bytes]:
 
 
 def wait_until_ready(process: subprocess.Popen[bytes], timeout: float = 40) -> None:
-    """等待页面开始接受连接。启动失败时抛出明确错误。"""
+    """Wait until the page accepts connections."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if port_is_open(PORT):
             return
         if process.poll() is not None:
-            raise RuntimeError("记账服务启动后立即退出。请在项目目录运行 streamlit run app.py 查看原因。")
+            raise RuntimeError("The ledger server exited immediately. Run streamlit run app.py in the project folder to see why.")
         time.sleep(0.25)
-    raise RuntimeError("记账页面在 40 秒内没有打开。")
+    raise RuntimeError("The ledger page did not open within 40 seconds.")
 
 
 def stop_server(process: subprocess.Popen[bytes]) -> None:
-    """结束本次启动的服务及其子进程。"""
+    """Stop the server started by this launch, including its child processes."""
     if process.poll() is not None:
         return
     subprocess.run(
@@ -85,35 +87,35 @@ def stop_server(process: subprocess.Popen[bytes]) -> None:
 
 
 def tell_user(message: str) -> None:
-    """没有命令行窗口时，用系统对话框说明问题。"""
+    """Show a system dialog when there is no console window."""
     if sys.platform != "win32":
         print(message)
         return
     import ctypes
 
-    ctypes.windll.user32.MessageBoxW(0, message, "本地智能记账", 0x40)
+    ctypes.windll.user32.MessageBoxW(0, message, APP_TITLE, 0x40)
 
 
 def open_window() -> bool:
-    """打开桌面窗口。返回 True 表示用户已关闭窗口，可以停止本次启动的服务。"""
+    """Open the desktop window. True means the user closed it and the server may stop."""
     try:
         import webview
     except ImportError:
-        tell_user("未安装窗口组件。页面会改用浏览器打开，服务会继续留在本机。")
+        tell_user("The window component is not installed. The page will open in a browser, and the server will keep running on this computer.")
         webbrowser.open(URL)
         return False
     try:
-        webview.create_window("本地智能记账", URL, width=1280, height=860, min_size=(960, 680))
+        webview.create_window(APP_TITLE, URL, width=1280, height=860, min_size=(960, 680))
         webview.start()
     except Exception:
-        tell_user("没能创建桌面窗口，已改用浏览器打开同一页面。")
+        tell_user("Could not create a desktop window. The same page was opened in a browser.")
         webbrowser.open(URL)
         return False
     return True
 
 
 def main() -> None:
-    """已有服务时只开窗口；否则先启动服务，关窗口后再关掉服务。"""
+    """Open a window when a server is already running. Otherwise start one and stop it when the window closes."""
     server = None
     close_server = False
     try:

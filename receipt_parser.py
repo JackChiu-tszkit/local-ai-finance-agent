@@ -1,7 +1,7 @@
-"""收据和截图解析。
+"""Receipt and screenshot parsing.
 
-图片只发送到用户配置的 Ollama 地址，默认是本机。
-识别结果先变成交易草稿，必须经确认后才会入账。
+The image is sent only to the Ollama address in settings, which defaults to this computer.
+The result becomes a draft and is saved only after confirmation.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from config import EXPENSE_CATEGORIES, Settings
 
 
 class ReceiptError(ValueError):
-    """图片无法读取，或识别结果不能使用。"""
+    """The image could not be read, or the result cannot be used."""
 
 
 class ReceiptPayload(BaseModel):
-    """视觉模型返回的收据结构。缺失内容必须保持为空，不能补猜。"""
+    """Receipt fields from the vision model. Missing values stay empty."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -101,23 +101,23 @@ _RECEIPT_SCHEMA = {
 
 
 def validate_image_bytes(data: bytes, filename: str) -> str:
-    """检查扩展名、文件头和大小。返回 png 或 jpeg。"""
+    """Check the extension, file header, and size. Returns png or jpeg."""
     if not data:
-        raise ReceiptError("图片是空文件。")
+        raise ReceiptError("The image file is empty.")
     if len(data) > _MAX_IMAGE_BYTES:
-        raise ReceiptError("图片超过 8MB，请压缩后再试。")
+        raise ReceiptError("The image is larger than 8MB. Compress it and try again.")
     suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     is_png = data.startswith(b"\x89PNG\r\n\x1a\n")
     is_jpeg = data.startswith(b"\xff\xd8\xff")
     if is_png:
         if suffix != "png":
-            raise ReceiptError("文件内容是 PNG，但扩展名不是 .png。")
+            raise ReceiptError("The file is a PNG, but the extension is not .png.")
         return "png"
     if is_jpeg:
         if suffix not in {"jpg", "jpeg"}:
-            raise ReceiptError("文件内容是 JPEG，但扩展名不是 .jpg 或 .jpeg。")
+            raise ReceiptError("The file is a JPEG, but the extension is not .jpg or .jpeg.")
         return "jpeg"
-    raise ReceiptError("只支持 PNG、JPG 和 JPEG 图片。")
+    raise ReceiptError("Only PNG, JPG, and JPEG images are supported.")
 
 
 def _decimal_or_none(value: str | None) -> Decimal | None:
@@ -147,9 +147,10 @@ def interpret_receipt(
     today: date,
     default_currency: str,
 ) -> TransactionDraft:
-    """把收据 JSON 转成待确认草稿。
+    """Turn receipt JSON into a draft.
 
-    有多个可能的总额时不自动挑选。只有小计、没有实付额时也不把小计当成总额。
+    Several possible totals are not chosen automatically.
+    A subtotal without an amount paid is not treated as the total.
     """
     warnings: list[str] = []
     total = _decimal_or_none(payload.total_amount)
@@ -162,16 +163,16 @@ def interpret_receipt(
     if total is not None and total not in possible:
         possible.insert(0, total)
     if subtotal is not None and total is not None and subtotal != total:
-        warnings.append("已忽略小计，金额以实付总额为准。")
+        warnings.append("Ignored the subtotal. The amount is the amount actually paid.")
     if total is None and subtotal is not None:
-        warnings.append("只看到小计，没有把小计当作实付金额。")
+        warnings.append("Only a subtotal was visible, so it was not used as the amount paid.")
 
     currency = (payload.currency or "").upper()
     currency_assumed = False
     if len(currency) != 3 or not currency.isalpha():
         currency = default_currency.upper()
         currency_assumed = True
-        warnings.append(f"收据没有明确币种，已暂用默认币种 {currency}。")
+        warnings.append(f"The receipt has no clear currency. Using the default currency {currency} for now.")
 
     ambiguous = [item for item in possible if item != total] if total is not None else possible
     amount: Decimal | None = total
@@ -179,9 +180,9 @@ def interpret_receipt(
     if len(possible) > 1:
         amount = None
         possible_for_user = possible
-        warnings.append("识别到多个可能的总额，请选择实际支付金额。")
+        warnings.append("Several possible totals found. Choose the amount you actually paid.")
     elif amount is None:
-        warnings.append("没有识别到实付总额，请手动填写。")
+        warnings.append("No total paid was found. Enter it manually.")
 
     tx_date = _parse_iso_date(payload.transaction_date)
     assumed = False
@@ -189,13 +190,13 @@ def interpret_receipt(
     if tx_date is None:
         tx_date = today
         assumed = True
-        warnings.append("收据没有清晰日期，已暂按今天填写。")
-    category = payload.suggested_category if payload.suggested_category in EXPENSE_CATEGORIES else "其他"
+        warnings.append("No clear date on the receipt. Using today for now.")
+    category = payload.suggested_category if payload.suggested_category in EXPENSE_CATEGORIES else "Other"
     merchant = payload.merchant.strip() if payload.merchant else None
     items = [item[:80] for item in payload.items[:30]]
-    description = f"收据：{merchant}" if merchant else "收据记账"
+    description = f"Receipt: {merchant}" if merchant else "Receipt entry"
     if payload.notes:
-        warnings.append(f"识别备注：{payload.notes[:120]}")
+        warnings.append(f"Note: {payload.notes[:120]}")
     if payload.clarification_question:
         warnings.append(payload.clarification_question)
     draft = TransactionDraft(
@@ -217,7 +218,6 @@ def interpret_receipt(
         parser="vision",
         raw_text=description,
     )
-    # 多个总额时 _mark_clarification 会要求用户选择；这里保留该行为。
     if ambiguous and amount is None:
         draft.possible_amounts = possible_for_user
     return _mark_clarification(draft)
@@ -233,7 +233,7 @@ def parse_receipt_bytes(
     requester: Callable[..., dict[str, Any]] | None = None,
     timeout: float = 180,
 ) -> TransactionDraft:
-    """调用本地视觉模型读取收据。模型不可用时直接报错，不编造内容。"""
+    """Read a receipt with the local vision model. If the model is down, this raises instead of guessing."""
     from ai_parser import request_ollama_chat
 
     validate_image_bytes(data, filename)
@@ -241,12 +241,12 @@ def parse_receipt_bytes(
     caller = requester or request_ollama_chat
     encoded = base64.b64encode(data).decode("ascii")
     prompt = (
-        "请只根据图片中看得见的内容提取收据或交易截图。"
-        "不要编造商户、日期、金额或商品。看不清的字段返回 null。"
-        "total_amount 必须是最终实付金额，不要填写小计。"
-        "如果有多个可能的总额，全部放入 possible_amounts，并把 needs_clarification 设为 true。"
-        "金额和日期使用字符串，日期格式 YYYY-MM-DD。"
-        f"支出分类只能从以下列表选择：{'、'.join(EXPENSE_CATEGORIES)}。"
+        "Extract only what is visible in this receipt or payment screenshot. "
+        "Do not invent a merchant, date, amount, or item. Use null for anything you cannot read. "
+        "total_amount must be the final amount paid, not the subtotal. "
+        "If several totals are possible, put all of them in possible_amounts and set needs_clarification to true. "
+        "Amounts and dates are strings. Dates use YYYY-MM-DD. "
+        f"suggested_category must be one of: {', '.join(EXPENSE_CATEGORIES)}."
     )
     messages = [{"role": "user", "content": prompt, "images": [encoded]}]
     raw = caller(

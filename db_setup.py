@@ -1,6 +1,6 @@
-"""创建 SQLite 数据库并写入预设分类。
+"""Create the SQLite database and seed the built-in categories.
 
-可以单独执行：
+Run it on its own with:
 
     python db_setup.py
 """
@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from config import DB_PATH, EXPENSE_CATEGORIES, INCOME_CATEGORIES
 
 
-# 金额使用整数最小货币单位 amount_minor，避免 REAL 浮点误差。
-# 例如人民币和挪威克朗都是 2 位小数，120.50 保存为 12050。
+# Amounts are stored as integer minor units in amount_minor, not as REAL.
+# NOK and CNY both use 2 decimal places, so 120.50 is stored as 12050.
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -113,18 +113,18 @@ WHERE category_id IS NULL;
 
 
 def utc_now() -> str:
-    """返回不带微秒的 UTC 时间戳，作为创建和更新时间。"""
+    """UTC timestamp without microseconds, used for created and updated times."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def apply_schema(connection: sqlite3.Connection) -> None:
-    """执行建表脚本。executescript 会在内部提交当前事务。"""
+    """Create the tables. executescript commits the current transaction."""
     connection.execute("PRAGMA foreign_keys = ON")
     connection.executescript(SCHEMA)
 
 
 def seed_categories(connection: sqlite3.Connection) -> None:
-    """写入预设分类。重复执行不会产生重复行。"""
+    """Insert the built-in categories. Running this again does not duplicate rows."""
     timestamp = utc_now()
     rows = [(name, "expense", timestamp) for name in EXPENSE_CATEGORIES]
     rows.extend((name, "income", timestamp) for name in INCOME_CATEGORIES)
@@ -138,13 +138,13 @@ def seed_categories(connection: sqlite3.Connection) -> None:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """在已打开的连接上创建表并填充分类。"""
+    """Create the tables and fill the categories on an open connection."""
     apply_schema(connection)
     seed_categories(connection)
 
 
 def main() -> None:
-    """命令行初始化默认数据库。"""
+    """Initialize the default database from the command line."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     try:
@@ -153,7 +153,7 @@ def main() -> None:
         connection.commit()
     finally:
         connection.close()
-    print(f"数据库已就绪：{DB_PATH}")
+    print(f"Database ready: {DB_PATH}")
 
 
 if __name__ == "__main__":

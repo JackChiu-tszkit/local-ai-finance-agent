@@ -1,7 +1,7 @@
-"""本地智能记账的 Streamlit 界面。
+"""Streamlit interface for the local ledger.
 
-所有写入都发生在用户点击“确认保存”之后。
-页面重跑不会重复入账：已保存的确认令牌会被记住。
+Nothing is written until the user clicks Save.
+A rerun does not insert the same row again: the confirmation token is remembered.
 """
 
 from __future__ import annotations
@@ -45,18 +45,18 @@ from database import get_connection, list_audit_logs
 from zoneinfo import ZoneInfo
 
 
-TYPE_OPTIONS = [("expense", "支出"), ("income", "收入"), ("refund", "退款")]
+TYPE_OPTIONS = [("expense", "Expense"), ("income", "Income"), ("refund", "Refund")]
 CURRENCIES = ["NOK", "CNY", "USD", "EUR", "GBP", "SEK", "DKK", "JPY"]
-FREQUENCIES = [("day", "按日"), ("week", "按周"), ("month", "按月")]
+FREQUENCIES = [("day", "By day"), ("week", "By week"), ("month", "By month")]
 
 
 def get_service() -> FinanceService:
-    """打开或创建本地数据库，并返回业务服务。"""
+    """Open or create the local database and return the finance service."""
     return FinanceService(DB_PATH)
 
 
 def ensure_state() -> None:
-    """初始化会话。设置和待确认交易都放在 Session State 中。"""
+    """Initialize the session. Settings and pending drafts live in session state."""
     if "settings" not in st.session_state:
         st.session_state.settings = load_settings()
     if "saved_tokens" not in st.session_state:
@@ -88,7 +88,7 @@ def show_flash() -> None:
 
 
 def stage_draft(draft: TransactionDraft) -> None:
-    """把草稿放进会话。此时尚未写数据库。"""
+    """Store a draft in the session. The database is not written yet."""
     st.session_state.pending = {
         "token": uuid.uuid4().hex,
         "draft": draft.model_dump(mode="json"),
@@ -96,17 +96,17 @@ def stage_draft(draft: TransactionDraft) -> None:
 
 
 def remember_saved(service: FinanceService, result: dict) -> None:
-    """确认保存后记住商户分类，供下一次解析使用。"""
+    """Remember the merchant category after a save, for the next parse."""
     service.remember_merchant(result.get("merchant"), result["category_name"], result["transaction_type"])
 
 
 def stage_with_memory(service: FinanceService, draft: TransactionDraft) -> None:
-    """单次解析也使用已经记住的商户分类。"""
+    """A one-off parse also uses merchant categories that were remembered."""
     stage_draft(apply_merchant_memory(draft, service.merchant_memories()))
 
 
 def try_amount(text: str) -> Decimal | None:
-    """解析用户输入的金额。格式不对时返回空，便于页面继续渲染。"""
+    """Parse an amount typed by the user. An invalid value stays empty so the page can keep rendering."""
     cleaned = text.strip().replace(",", "").replace(" ", "")
     if not cleaned:
         return None
@@ -121,18 +121,18 @@ def try_amount(text: str) -> Decimal | None:
 
 def duplicate_rows(report) -> list[dict]:
     rows = []
-    for label, items in (("完全重复", report.exact), ("疑似重复", report.suspected)):
+    for label, items in (("Exact duplicate", report.exact), ("Possible duplicate", report.suspected)):
         for item in items:
             rows.append(
                 {
-                    "匹配": label,
-                    "编号": item["id"],
-                    "日期": item["transaction_date"],
-                    "金额": item["amount"],
-                    "币种": item["currency"],
-                    "类型": item["type_label"],
-                    "商户": item.get("merchant") or "",
-                    "描述": item.get("description") or "",
+                    "Match": label,
+                    "Id": item["id"],
+                    "Date": item["transaction_date"],
+                    "Amount": item["amount"],
+                    "Currency": item["currency"],
+                    "Type": item["type_label"],
+                    "Merchant": item.get("merchant") or "",
+                    "Description": item.get("description") or "",
                 }
             )
     return rows
@@ -155,17 +155,17 @@ def render_editor(
     initial: dict,
     submit_label: str,
 ) -> dict | None:
-    """渲染可修改的确认表单。只有点击按钮时才返回字段。"""
+    """Render the editable confirmation form. Fields are returned only when the button is clicked."""
     for warning in initial.get("warnings") or []:
         st.warning(warning)
     if initial.get("clarification"):
         st.info(initial["clarification"])
     if initial.get("items"):
-        st.markdown("**识别到的明细**")
+        st.markdown("**Items found**")
         for item in initial["items"]:
             st.write(f"- {item}")
     if initial.get("raw_text"):
-        with st.expander("原始内容"):
+        with st.expander("Original text"):
             st.write(initial["raw_text"])
 
     type_labels = [label for _code, label in TYPE_OPTIONS]
@@ -174,7 +174,7 @@ def render_editor(
     if current_type not in type_codes:
         current_type = "expense"
     selected_label = st.selectbox(
-        "收支类型",
+        "Type",
         type_labels,
         index=type_codes.index(current_type),
         key=f"{prefix}_type",
@@ -183,14 +183,14 @@ def render_editor(
     if transaction_type == "expense":
         categories = EXPENSE_CATEGORIES
     elif transaction_type == "refund":
-        categories = ["退款"]
+        categories = ["Refund"]
     else:
         categories = INCOME_CATEGORIES
     category_value = initial.get("category")
     if category_value not in categories:
         category_value = categories[0]
-    category = st.selectbox(
-        "分类",
+        category = st.selectbox(
+        "Category",
         categories,
         index=categories.index(category_value),
         key=f"{prefix}_category_{transaction_type}",
@@ -198,13 +198,13 @@ def render_editor(
     date_value = initial.get("transaction_date") or current_today()
     if isinstance(date_value, str):
         date_value = date.fromisoformat(date_value)
-    transaction_date = st.date_input("日期", value=date_value, key=f"{prefix}_date")
+    transaction_date = st.date_input("Date", value=date_value, key=f"{prefix}_date")
     currency_options = list(CURRENCIES)
     currency_value = (initial.get("currency") or current_settings().default_currency).upper()
     if currency_value not in currency_options:
         currency_options.append(currency_value)
     currency = st.selectbox(
-        "币种",
+        "Currency",
         currency_options,
         index=currency_options.index(currency_value),
         key=f"{prefix}_currency",
@@ -212,34 +212,34 @@ def render_editor(
     possible = initial.get("possible_amounts") or []
     if possible:
         choice = st.radio(
-            "识别到多个金额，请选择实际支付金额",
-            possible + ["手动输入"],
+            "Several amounts were found. Choose the one you paid",
+            possible + ["Type it in"],
             key=f"{prefix}_amount_choice",
         )
-        if choice == "手动输入":
-            amount_text = st.text_input("金额", value="", key=f"{prefix}_amount")
+        if choice == "Type it in":
+            amount_text = st.text_input("Amount", value="", key=f"{prefix}_amount")
         else:
             amount_text = choice
-            st.caption(f"当前选择的金额：{choice}")
+            st.caption(f"Selected amount: {choice}")
     else:
         amount_text = st.text_input(
-            "金额",
+            "Amount",
             value=initial.get("amount_text") or "",
             key=f"{prefix}_amount",
         )
-    description = st.text_input("描述", value=initial.get("description") or "", key=f"{prefix}_description")
-    merchant = st.text_input("商户", value=initial.get("merchant") or "", key=f"{prefix}_merchant")
-    account = st.text_input("账户", value=initial.get("account") or "", key=f"{prefix}_account")
+    description = st.text_input("Description", value=initial.get("description") or "", key=f"{prefix}_description")
+    merchant = st.text_input("Merchant", value=initial.get("merchant") or "", key=f"{prefix}_merchant")
+    account = st.text_input("Account", value=initial.get("account") or "", key=f"{prefix}_account")
     amount = try_amount(amount_text)
     if amount is not None:
         limit = threshold_for(currency)
         if limit is not None and amount >= limit:
-            st.warning(f"金额达到 {currency} {limit} 的提示线。当前版本无论金额大小，都要确认后才保存。")
+            st.warning(f"The amount reaches the {currency} {limit} warning line. Every amount still has to be confirmed before it is saved.")
 
     original_id = None
     if transaction_type == "refund":
         if amount is None:
-            st.info("填写退款金额后，会列出可以关联的支出。")
+            st.info("After you enter a refund amount, expenses you can link are listed.")
         else:
             candidates, note = service.find_refund_candidates(
                 amount=amount,
@@ -252,19 +252,19 @@ def render_editor(
             if note:
                 st.warning(note)
             if not candidates:
-                st.error("没有找到仍可退款的支出。")
+                st.error("No expense with a remaining refund balance was found.")
             else:
                 labels = []
                 ids = []
                 for item in candidates:
                     labels.append(
                         f"#{item['id']} {item['transaction_date']} {item['amount']} {item['currency']} "
-                        f"{item.get('category_name') or ''} {item.get('merchant') or ''} 剩余 {item['remaining']}"
+                        f"{item.get('category_name') or ''} {item.get('merchant') or ''} remaining {item['remaining']}"
                     )
                     ids.append(int(item["id"]))
                 wanted = initial.get("original_transaction_id")
                 index = ids.index(wanted) if wanted in ids else 0
-                selected = st.selectbox("原始支出", labels, index=index, key=f"{prefix}_original")
+                selected = st.selectbox("Original expense", labels, index=index, key=f"{prefix}_original")
                 original_id = ids[labels.index(selected)]
 
     report = None
@@ -280,24 +280,24 @@ def render_editor(
             exclude_id=initial.get("exclude_id"),
         )
         if report.has_any:
-            st.warning("发现相似的历史交易。继续保存不会覆盖或删除旧记录。")
+            st.warning("A similar past transaction was found. Saving will not overwrite or delete it.")
             st.dataframe(duplicate_rows(report), width="stretch", hide_index=True)
-            allow_duplicate = st.checkbox("我已核对，仍然保存", key=f"{prefix}_allow_duplicate")
+            allow_duplicate = st.checkbox("I checked this and still want to save", key=f"{prefix}_allow_duplicate")
 
     submitted = st.button(submit_label, type="primary", key=f"{prefix}_submit")
     if not submitted:
         return None
     if amount is None:
-        st.error("请填写大于 0 的金额。")
+        st.error("Enter an amount greater than 0.")
         return None
     if not description.strip():
-        st.error("请填写描述。")
+        st.error("Enter a description.")
         return None
     if transaction_type == "refund" and original_id is None:
-        st.error("请选择要退款的原始支出。")
+        st.error("Choose the original expense for this refund.")
         return None
     if report is not None and report.has_any and not allow_duplicate:
-        st.error("请先勾选相似交易确认，或返回修改。")
+        st.error("Tick the similar-transaction confirmation, or go back and edit.")
         return None
     return {
         "transaction_date": transaction_date,
@@ -349,34 +349,34 @@ def initial_from_draft(draft: TransactionDraft) -> dict:
 
 
 def render_pending(service: FinanceService) -> None:
-    """展示待确认交易。保存成功后清除草稿，避免重跑再次写入。"""
+    """Show the pending transaction. After a successful save, clear the draft so a rerun does not write it again."""
     pending = st.session_state.pending
     if not pending:
         return
     token = pending["token"]
     if token in st.session_state.saved_tokens:
-        st.info("这笔交易刚刚已经保存。")
+        st.info("This transaction was just saved.")
         return
     try:
         draft = TransactionDraft.model_validate(pending["draft"])
     except ValidationError:
-        st.error("待确认的数据已损坏，请重新解析。")
+        st.error("The pending data could not be read. Parse it again.")
         st.session_state.pending = None
         return
-    st.subheader("确认交易")
-    st.caption("可以修改下面的字段。点击“确认保存”后才会写入本地数据库。")
+    st.subheader("Confirm transaction")
+    st.caption("You can edit the fields below. They are written to the local database only after you click Save.")
     result = render_editor(
         service,
         prefix=token,
         initial=initial_from_draft(draft),
-        submit_label="确认保存",
+        submit_label="Save",
     )
     if result is None:
         return
     try:
         transaction_id = service.create_transaction(**result)
     except DuplicateTransactionError:
-        st.error("保存前又检测到相似交易，请勾选确认后重新保存。")
+        st.error("Another similar transaction was found before saving. Tick the confirmation and save again.")
         return
     except (ValueError, KeyError) as exc:
         st.error(str(exc))
@@ -385,25 +385,25 @@ def render_pending(service: FinanceService) -> None:
     st.session_state.saved_tokens = st.session_state.saved_tokens[-200:]
     remember_saved(service, result)
     st.session_state.pending = None
-    st.session_state.flash = f"已保存，交易编号 {transaction_id}。"
+    st.session_state.flash = f"Saved, transaction {transaction_id}."
     st.rerun()
 
 
 def page_add(service: FinanceService) -> None:
-    st.header("新增交易")
-    st.caption("支持自然语言、收据图片和语音。三种方式都会先生成草稿，确认后才入账。")
+    st.header("Add transaction")
+    st.caption("Type a sentence, upload a receipt, or use speech. Each one becomes a draft and is saved only after you confirm.")
     settings = current_settings()
     today = current_today()
-    text_tab, receipt_tab, voice_tab, manual_tab = st.tabs(["自然语言", "收据图片", "语音", "手动填写"])
+    text_tab, receipt_tab, voice_tab, manual_tab = st.tabs(["Text", "Receipt", "Speech", "Manual"])
     with text_tab:
         text = st.text_area(
-            "用一句话记账",
-            placeholder="例如：今天在 Kiwi 买菜花了350 NOK。",
+            "Describe one transaction",
+            placeholder="For example: Spent 350 NOK at Kiwi today. Or: I dag brukte jeg 350 kr på Kiwi.",
             height=120,
         )
-        if st.button("解析文字", type="primary"):
+        if st.button("Parse text", type="primary"):
             if not text.strip():
-                st.warning("请输入交易内容。")
+                st.warning("Enter a transaction.")
             else:
                 draft = parse_transaction_text(
                     text,
@@ -413,11 +413,11 @@ def page_add(service: FinanceService) -> None:
                 )
                 stage_with_memory(service, draft)
     with receipt_tab:
-        image = st.file_uploader("上传 PNG、JPG 或 JPEG", type=["png", "jpg", "jpeg"])
-        st.caption("图片只发送到设置中的 Ollama 地址，默认是本机，不会使用外部视觉 API。")
-        if st.button("识别收据", type="primary"):
+        image = st.file_uploader("Upload a PNG, JPG, or JPEG", type=["png", "jpg", "jpeg"])
+        st.caption("The image is sent only to the Ollama address in Settings, which defaults to this computer.")
+        if st.button("Read receipt", type="primary"):
             if image is None:
-                st.warning("请先选择图片。")
+                st.warning("Choose an image first.")
             else:
                 try:
                     draft = parse_receipt_bytes(
@@ -433,32 +433,32 @@ def page_add(service: FinanceService) -> None:
                     ):
                         st.error(str(exc))
                     else:
-                        st.error(f"收据识别失败：{exc}")
+                        st.error(f"Could not read the receipt: {exc}")
                 else:
                     stage_with_memory(service, draft)
     with voice_tab:
-        st.caption("语音在本机转成文字，再使用和键盘输入相同的解析与确认流程。")
+        st.caption("Speech is transcribed on this computer, then parsed and confirmed like typed text.")
         audio_file = st.file_uploader(
-            "上传音频",
+            "Upload audio",
             type=["wav", "mp3", "m4a", "ogg", "flac", "webm", "aac"],
         )
-        recorded = st.audio_input("或直接录音") if hasattr(st, "audio_input") else None
+        recorded = st.audio_input("Or record here") if hasattr(st, "audio_input") else None
         if not hasattr(st, "audio_input"):
-            st.info("当前 Streamlit 版本没有内置录音组件，请上传音频文件。")
+            st.info("This Streamlit version has no recorder. Upload an audio file instead.")
         if "transcript_box" not in st.session_state:
             st.session_state.transcript_box = ""
         if st.session_state.pop("transcript_dirty", False):
             st.session_state.transcript_box = st.session_state.transcript
-        edited = st.text_area("转写文字可以修改后再解析", key="transcript_box")
+        edited = st.text_area("You can edit the transcript before parsing", key="transcript_box")
         action_col, reparse_col = st.columns(2)
         with action_col:
-            transcribe_clicked = st.button("转写并解析", type="primary")
+            transcribe_clicked = st.button("Transcribe and parse", type="primary")
         with reparse_col:
-            reparse_clicked = st.button("按上面的文字重新解析")
+            reparse_clicked = st.button("Parse the text above")
         chosen = recorded or audio_file
         if transcribe_clicked:
             if chosen is None:
-                st.warning("请先录音或上传音频。")
+                st.warning("Record audio or upload a file first.")
             else:
                 filename = getattr(chosen, "name", "recording.wav")
                 try:
@@ -484,7 +484,7 @@ def page_add(service: FinanceService) -> None:
                     st.rerun()
         if reparse_clicked:
             if not edited.strip():
-                st.warning("没有可解析的文字。")
+                st.warning("There is no text to parse.")
             else:
                 draft = parse_transaction_text(
                     edited,
@@ -495,8 +495,8 @@ def page_add(service: FinanceService) -> None:
                 draft.source = "voice"
                 stage_with_memory(service, draft)
     with manual_tab:
-        st.write("不使用模型时，可以手动填写。保存前同样需要点击确认。")
-        if st.button("开始手动记账"):
+        st.write("You can fill the form yourself. It still needs confirmation before it is saved.")
+        if st.button("Start a manual entry"):
             stage_draft(
                 TransactionDraft(
                     transaction_date=today,
@@ -505,7 +505,7 @@ def page_add(service: FinanceService) -> None:
                     currency_assumed=True,
                     transaction_type="expense",
                     type_confident=True,
-                    category="其他",
+                    category="Other",
                     description="",
                     source="manual",
                     parser="manual",
@@ -515,22 +515,22 @@ def page_add(service: FinanceService) -> None:
 
 
 def render_budget_alerts(service: FinanceService, today: date) -> None:
-    """在总览顶部显示本月预算警告。80% 和超支都使用醒目的红色提示。"""
+    """Show this month's budget warnings at the top of Overview. Both 80% and over-budget use a red message."""
     for status in service.budget_status(year=today.year, month=today.month):
         if status.level == "ok":
             continue
-        name = status.category_name or "总支出"
+        name = status.category_name or "Total spending"
         spent = format_money(status.spent_minor, status.currency)
         limit = format_money(status.limit_minor, status.currency)
         if status.level == "over":
-            st.error(f"已超出预算：{name}（{status.currency}）已支出 {spent}，预算 {limit}。")
+            st.error(f"Over budget: {name} ({status.currency}) spent {spent}, budget {limit}.")
         else:
             percent = (status.ratio * Decimal(100)).quantize(Decimal("0.1"))
-            st.error(f"预算警告：{name}（{status.currency}）已使用 {percent}%，支出 {spent} / 预算 {limit}。")
+            st.error(f"Budget warning: {name} ({status.currency}) used {percent}%, spent {spent} / budget {limit}.")
 
 
 def render_charts(summary) -> None:
-    """把整数金额换成图表所需的显示值。汇总本身不使用浮点运算。"""
+    """Turn integer amounts into display values for the charts. The totals themselves are not computed with floats."""
     currency = summary.currency
     labels = []
     values = []
@@ -539,21 +539,21 @@ def render_charts(summary) -> None:
             labels.append(name)
             values.append(float(from_minor(minor, currency)))
     if labels:
-        pie = px.pie(names=labels, values=values, title=f"{currency} 分类净支出占比")
+        pie = px.pie(names=labels, values=values, title=f"{currency} share of net expense")
         st.plotly_chart(pie, width="stretch")
     else:
-        st.info(f"{currency} 在当前筛选下没有正向净支出，因此不绘制饼图。")
+        st.info(f"{currency} has no positive net expense in this filter, so there is no pie chart.")
     if not summary.periods:
         return
     income = [float(from_minor(value, currency)) for value in summary.period_income]
     net_expense = [float(from_minor(value, currency)) for value in summary.period_net_expense]
     bar = go.Figure()
-    bar.add_bar(name="收入", x=summary.periods, y=income)
-    bar.add_bar(name="净支出", x=summary.periods, y=net_expense)
-    bar.update_layout(barmode="group", title=f"{currency} 收入和净支出")
+    bar.add_bar(name="Income", x=summary.periods, y=income)
+    bar.add_bar(name="Net expense", x=summary.periods, y=net_expense)
+    bar.update_layout(barmode="group", title=f"{currency} income and net expense")
     st.plotly_chart(bar, width="stretch")
-    line = px.line(x=summary.periods, y=net_expense, markers=True, title=f"{currency} 净支出趋势")
-    line.update_layout(xaxis_title="周期", yaxis_title=currency)
+    line = px.line(x=summary.periods, y=net_expense, markers=True, title=f"{currency} net expense trend")
+    line.update_layout(xaxis_title="Period", yaxis_title=currency)
     st.plotly_chart(line, width="stretch")
 
 
@@ -562,9 +562,9 @@ def _queue_item(draft: TransactionDraft) -> dict:
 
 
 def page_agent(service: FinanceService) -> None:
-    """对话式记账。提问和修改草稿都不会直接写入数据库。"""
-    st.header("记账助手")
-    st.caption("可以连续补充草稿，也可以询问本机账本。金额由数据库计算。点击确认后才入账。")
+    """Conversational bookkeeping. Questions and draft edits are not written to the database."""
+    st.header("Assistant")
+    st.caption("You can keep editing a draft, or ask about the ledger on this computer. Amounts come from the database. Nothing is saved until you confirm.")
     settings = current_settings()
     today = current_today()
     for message in st.session_state.agent_messages:
@@ -577,44 +577,44 @@ def page_agent(service: FinanceService) -> None:
         st.dataframe(proposal["preview"], width="stretch", hide_index=True)
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
-            if st.button("确认修改这些分类", type="primary"):
+            if st.button("Apply these category changes", type="primary"):
                 changed = service.recategorize(proposal["transaction_ids"], proposal["category_name"])
                 st.session_state.agent_proposal = None
                 st.session_state.agent_messages.append(
-                    {"role": "assistant", "content": f"已修改 {changed} 笔支出的分类。"}
+                    {"role": "assistant", "content": f"Updated the category on {changed} expenses."}
                 )
                 st.session_state.agent_messages = st.session_state.agent_messages[-40:]
                 st.rerun()
         with cancel_col:
-            if st.button("取消这次修改"):
+            if st.button("Cancel this change"):
                 st.session_state.agent_proposal = None
-                st.session_state.agent_messages.append({"role": "assistant", "content": "已取消，账本没有改动。"})
+                st.session_state.agent_messages.append({"role": "assistant", "content": "Cancelled. The ledger was not changed."})
                 st.rerun()
 
     queue = st.session_state.agent_queue
     if queue:
-        st.subheader(f"待确认 {1} / {len(queue)}")
+        st.subheader(f"To confirm {1} / {len(queue)}")
         try:
             draft = TransactionDraft.model_validate(queue[0]["draft"])
         except ValidationError:
             st.session_state.agent_queue = queue[1:]
-            st.error("一条草稿无法读取，已跳过。")
+            st.error("One draft could not be read and was skipped.")
             st.rerun()
         result = render_editor(
             service,
             prefix=f"agent_{queue[0]['token']}",
             initial=initial_from_draft(draft),
-            submit_label="确认保存这一笔",
+            submit_label="Save this one",
         )
-        if st.button("取消当前草稿"):
+        if st.button("Cancel this draft"):
             st.session_state.agent_queue = queue[1:]
-            st.session_state.agent_messages.append({"role": "assistant", "content": "已取消当前草稿，没有写入。"})
+            st.session_state.agent_messages.append({"role": "assistant", "content": "Cancelled the current draft. Nothing was written."})
             st.rerun()
         if result is not None:
             try:
                 transaction_id = service.create_transaction(**result)
             except DuplicateTransactionError:
-                st.error("保存前又检测到相似交易，请勾选确认后重新保存。")
+                st.error("Another similar transaction was found before saving. Tick the confirmation and save again.")
                 return
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
@@ -622,13 +622,13 @@ def page_agent(service: FinanceService) -> None:
             remember_saved(service, result)
             st.session_state.agent_queue = st.session_state.agent_queue[1:]
             st.session_state.agent_messages.append(
-                {"role": "assistant", "content": f"已保存，交易编号 {transaction_id}。"}
+                {"role": "assistant", "content": f"Saved, transaction {transaction_id}."}
             )
             st.session_state.agent_messages = st.session_state.agent_messages[-40:]
-            st.session_state.flash = f"已保存，交易编号 {transaction_id}。"
+            st.session_state.flash = f"Saved, transaction {transaction_id}."
             st.rerun()
 
-    prompt = st.chat_input("例如：午饭花了80元，地铁花了30元。也可以问这个月餐饮花了多少。")
+    prompt = st.chat_input("For example: Lunch cost 80 NOK, then the metro cost 30 NOK. Or ask how much Dining cost this month.")
     if not prompt:
         return
     pending = None
@@ -663,38 +663,38 @@ def page_agent(service: FinanceService) -> None:
 
 
 def page_dashboard(service: FinanceService) -> None:
-    st.header("财务总览")
+    st.header("Overview")
     today = current_today()
     render_budget_alerts(service, today)
     for note in service.spending_insights(today):
         st.warning(note)
-    st.caption("不同币种分开统计，不进行汇率换算。支出已扣除同期退款。")
+    st.caption("Each currency is totaled on its own. There is no exchange rate. Refunds are subtracted from expenses.")
     categories = service.list_categories()
-    category_labels = ["全部"] + [f"{item['name']}（{'支出' if item['category_type']=='expense' else '收入'}）" for item in categories]
+    category_labels = ["All"] + [f"{item['name']} ({'expense' if item['category_type']=='expense' else 'income'})" for item in categories]
     filter_col, type_col, currency_col = st.columns(3)
     with filter_col:
-        start_date = st.date_input("开始日期", value=today.replace(day=1), key="dash_start")
-        end_date = st.date_input("结束日期", value=today, key="dash_end")
+        start_date = st.date_input("Start date", value=today.replace(day=1), key="dash_start")
+        end_date = st.date_input("End date", value=today, key="dash_end")
     with type_col:
-        category_choice = st.selectbox("分类", category_labels, key="dash_category")
-        type_choice = st.selectbox("收支类型", ["全部", "支出", "收入", "退款"], key="dash_type")
+        category_choice = st.selectbox("Category", category_labels, key="dash_category")
+        type_choice = st.selectbox("Type", ["All", "Expense", "Income", "Refund"], key="dash_type")
     with currency_col:
-        keyword = st.text_input("关键词", key="dash_keyword")
-        frequency_label = st.radio("统计周期", [label for _code, label in FREQUENCIES], horizontal=True)
+        keyword = st.text_input("Keyword", key="dash_keyword")
+        frequency_label = st.radio("Period", [label for _code, label in FREQUENCIES], horizontal=True)
     frequency = dict((label, code) for code, label in FREQUENCIES)[frequency_label]
     category_id = None
-    if category_choice != "全部":
+    if category_choice != "All":
         category_id = categories[category_labels.index(category_choice) - 1]["id"]
-    type_map = {"全部": None, "支出": "expense", "收入": "income", "退款": "refund"}
+    type_map = {"All": None, "Expense": "expense", "Income": "income", "Refund": "refund"}
     known_currencies = []
     for row in service.list_transaction_rows():
         if row["currency"] not in known_currencies:
             known_currencies.append(row["currency"])
     default_currency = current_settings().default_currency
-    currency_options = ["全部"] + known_currencies
-    preferred = default_currency if default_currency in known_currencies else "全部"
+    currency_options = ["All"] + known_currencies
+    preferred = default_currency if default_currency in known_currencies else "All"
     currency_choice = st.selectbox(
-        "币种",
+        "Currency",
         currency_options,
         index=currency_options.index(preferred),
         key="dash_currency",
@@ -702,32 +702,32 @@ def page_dashboard(service: FinanceService) -> None:
     summaries = service.summarize(
         start_date=start_date,
         end_date=end_date,
-        currency=None if currency_choice == "全部" else currency_choice,
+        currency=None if currency_choice == "All" else currency_choice,
         category_id=category_id,
         transaction_type=type_map[type_choice],
         keyword=keyword.strip() or None,
         frequency=frequency,
     )
     if not summaries:
-        st.info("这个范围内还没有交易。")
+        st.info("There are no transactions in this range.")
     for summary in summaries:
         st.subheader(summary.currency)
         columns = st.columns(5)
         values = [
-            ("总收入", summary.total_income_minor),
-            ("总支出", summary.total_expense_minor),
-            ("退款", summary.total_refund_minor),
-            ("净支出", summary.net_expense_minor),
-            ("结余", summary.balance_minor),
+            ("Income", summary.total_income_minor),
+            ("Total spending", summary.total_expense_minor),
+            ("Refund", summary.total_refund_minor),
+            ("Net expense", summary.net_expense_minor),
+            ("Balance", summary.balance_minor),
         ]
         for column, (label, minor) in zip(columns, values):
             column.metric(label, format_money(minor, summary.currency))
         render_charts(summary)
-    st.subheader("最近交易")
+    st.subheader("Recent transactions")
     recent = service.list_transaction_rows(
         start_date=start_date,
         end_date=end_date,
-        currency=None if currency_choice == "全部" else currency_choice,
+        currency=None if currency_choice == "All" else currency_choice,
         category_id=category_id,
         transaction_type=type_map[type_choice],
         keyword=keyword.strip() or None,
@@ -740,44 +740,44 @@ def transaction_view(rows: list[dict]) -> list[dict]:
     for row in rows:
         view.append(
             {
-                "编号": row["id"],
-                "日期": row["transaction_date"],
-                "金额": row["amount"],
-                "币种": row["currency"],
-                "类型": row["type_label"],
-                "分类": row.get("category_name") or "",
-                "商户": row.get("merchant") or "",
-                "描述": row.get("description") or "",
-                "账户": row.get("account_name") or "",
-                "原交易": row.get("original_transaction_id") or "",
-                "状态": "已删除" if row.get("is_deleted") else "有效",
+                "Id": row["id"],
+                "Date": row["transaction_date"],
+                "Amount": row["amount"],
+                "Currency": row["currency"],
+                "Type": row["type_label"],
+                "Category": row.get("category_name") or "",
+                "Merchant": row.get("merchant") or "",
+                "Description": row.get("description") or "",
+                "Account": row.get("account_name") or "",
+                "Original": row.get("original_transaction_id") or "",
+                "Status": "Deleted" if row.get("is_deleted") else "Active",
             }
         )
     return view
 
 
 def page_history(service: FinanceService) -> None:
-    st.header("交易记录")
+    st.header("Transactions")
     today = current_today()
-    keyword = st.text_input("搜索描述、商户或账户")
+    keyword = st.text_input("Search description, merchant, or account")
     left, middle, right = st.columns(3)
     with left:
-        start_date = st.date_input("开始", value=date(today.year, 1, 1), key="history_start")
-        end_date = st.date_input("结束", value=today, key="history_end")
+        start_date = st.date_input("Start", value=date(today.year, 1, 1), key="history_start")
+        end_date = st.date_input("End", value=today, key="history_end")
     with middle:
-        currency = st.selectbox("币种筛选", ["全部"] + CURRENCIES, key="history_currency")
-        type_label = st.selectbox("类型筛选", ["全部", "支出", "收入", "退款"], key="history_type")
+        currency = st.selectbox("Currency", ["All"] + CURRENCIES, key="history_currency")
+        type_label = st.selectbox("Type", ["All", "Expense", "Income", "Refund"], key="history_type")
     with right:
-        include_deleted = st.checkbox("显示已删除")
+        include_deleted = st.checkbox("Show deleted")
         categories = service.list_categories()
-        category_labels = ["全部"] + [item["name"] + (" / 支出" if item["category_type"] == "expense" else " / 收入") for item in categories]
-        category_choice = st.selectbox("分类筛选", category_labels)
-    type_map = {"全部": None, "支出": "expense", "收入": "income", "退款": "refund"}
-    category_id = None if category_choice == "全部" else categories[category_labels.index(category_choice) - 1]["id"]
+        category_labels = ["All"] + [item["name"] + (" / Expense" if item["category_type"] == "expense" else " / Income") for item in categories]
+        category_choice = st.selectbox("Category", category_labels)
+    type_map = {"All": None, "Expense": "expense", "Income": "income", "Refund": "refund"}
+    category_id = None if category_choice == "All" else categories[category_labels.index(category_choice) - 1]["id"]
     filters = {
         "start_date": start_date,
         "end_date": end_date,
-        "currency": None if currency == "全部" else currency,
+        "currency": None if currency == "All" else currency,
         "category_id": category_id,
         "transaction_type": type_map[type_label],
         "keyword": keyword,
@@ -788,39 +788,39 @@ def page_history(service: FinanceService) -> None:
     export_left, export_right = st.columns(2)
     with export_left:
         st.download_button(
-            "导出当前筛选 CSV",
+            "Export this filter as CSV",
             data=service.export_csv(**filters),
             file_name="transactions.csv",
             mime="text/csv",
         )
     with export_right:
         st.download_button(
-            "导出当前筛选 Excel",
+            "Export this filter as Excel",
             data=service.export_excel(**filters),
             file_name="transactions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     if not rows:
-        st.info("没有符合条件的交易。")
+        st.info("No transactions match.")
         return
     labels = [
         f"#{row['id']} {row['transaction_date']} {row['amount']} {row['currency']} {row.get('description') or ''}"
         for row in rows
     ]
-    selected_label = st.selectbox("选择一笔交易", labels)
+    selected_label = st.selectbox("Choose a transaction", labels)
     selected = rows[labels.index(selected_label)]
     if selected["is_deleted"]:
-        st.warning("这笔记账已软删除，报表默认不统计它。")
-        if st.button("恢复这笔交易"):
+        st.warning("This entry is soft-deleted and is left out of reports by default.")
+        if st.button("Restore this transaction"):
             try:
                 service.restore_transaction(int(selected["id"]))
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state.flash = f"已恢复交易 {selected['id']}。"
+                st.session_state.flash = f"Restored transaction {selected['id']}。"
                 st.rerun()
         return
-    st.subheader("编辑交易")
+    st.subheader("Edit transaction")
     initial = {
         "transaction_date": selected["transaction_date"],
         "amount_text": format(from_minor(int(selected["amount_minor"]), selected["currency"]), "f"),
@@ -841,7 +841,7 @@ def page_history(service: FinanceService) -> None:
         "source": selected.get("source") or "manual",
         "exclude_id": int(selected["id"]),
     }
-    result = render_editor(service, prefix=f"edit_{selected['id']}", initial=initial, submit_label="保存修改")
+    result = render_editor(service, prefix=f"edit_{selected['id']}", initial=initial, submit_label="Save changes")
     if result is not None:
         try:
             service.update_transaction(
@@ -858,75 +858,75 @@ def page_history(service: FinanceService) -> None:
                 allow_duplicate=result["allow_duplicate"],
             )
         except DuplicateTransactionError:
-            st.error("修改后与另一笔交易过于相似，请勾选确认。")
+            st.error("The edit is too similar to another transaction. Tick the confirmation.")
         except (ValueError, KeyError) as exc:
             st.error(str(exc))
         else:
-            st.session_state.flash = f"已更新交易 {selected['id']}。"
+            st.session_state.flash = f"Updated transaction {selected['id']}。"
             st.rerun()
-    confirmed = st.checkbox("我确认要删除这笔交易", key=f"delete_confirm_{selected['id']}")
-    if st.button("删除交易", key=f"delete_{selected['id']}"):
+    confirmed = st.checkbox("I confirm that I want to delete this transaction", key=f"delete_confirm_{selected['id']}")
+    if st.button("Delete transaction", key=f"delete_{selected['id']}"):
         if not confirmed:
-            st.error("删除前需要勾选确认。")
+            st.error("Tick the confirmation before deleting.")
         else:
             try:
                 service.delete_transaction(int(selected["id"]), confirmed=True)
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state.flash = f"已软删除交易 {selected['id']}。"
+                st.session_state.flash = f"Soft-deleted transaction {selected['id']}."
                 st.rerun()
 
 
 def page_budget(service: FinanceService) -> None:
-    st.header("预算设置")
-    st.caption("预算按月计算。退款会减少对应分类和总支出的净额。不同币种不会混在一起。")
+    st.header("Budgets")
+    st.caption("Budgets are monthly. Refunds reduce the category and the total. Currencies stay separate.")
     today = current_today()
     categories = EXPENSE_CATEGORIES
     left, right = st.columns(2)
     with left:
-        choice = st.selectbox("预算范围", ["总预算"] + categories)
-        currency = st.selectbox("预算币种", CURRENCIES, index=CURRENCIES.index(current_settings().default_currency) if current_settings().default_currency in CURRENCIES else 0)
-        amount_text = st.text_input("每月金额", value="0")
-        if st.button("保存预算", type="primary"):
+        choice = st.selectbox("Budget scope", ["Overall budget"] + categories)
+        currency = st.selectbox("Budget currency", CURRENCIES, index=CURRENCIES.index(current_settings().default_currency) if current_settings().default_currency in CURRENCIES else 0)
+        amount_text = st.text_input("Monthly amount", value="0")
+        if st.button("Save budget", type="primary"):
             amount = try_amount(amount_text)
             if amount is None and amount_text.strip() not in {"0", "0.0", "0.00"}:
-                st.error("请输入 0 或正数金额。")
+                st.error("Enter 0 or a positive amount.")
             else:
                 try:
                     service.set_budget(
-                        category_name=None if choice == "总预算" else choice,
+                        category_name=None if choice == "Overall budget" else choice,
                         currency=currency,
                         amount=Decimal(amount_text.strip().replace(",", "")),
                     )
                 except (ValueError, InvalidOperation) as exc:
                     st.error(str(exc))
                 else:
-                    st.session_state.flash = "预算已保存。"
+                    st.session_state.flash = "Budget saved."
                     st.rerun()
     statuses = {status.budget_id: status for status in service.budget_status(year=today.year, month=today.month)}
     with right:
-        st.write(f"{today.year} 年 {today.month} 月使用情况")
+        st.write(f"{today.year}-{today.month:02d} usage")
     for budget in service.list_budgets():
         status = statuses.get(int(budget["id"]))
-        name = budget.get("category_name") or "总支出"
-        st.markdown(f"**{name} · {budget['currency']}** 每月 {budget['limit']}")
+        name = budget.get("category_name") or "Total spending"
+        st.markdown(f"**{name} · {budget['currency']}** per month {budget['limit']}")
         if status:
             ratio = 0.0 if status.ratio <= 0 else min(float(status.ratio), 1.0)
             st.progress(ratio)
-            st.caption(f"本月净支出 {format_money(status.spent_minor, status.currency)}")
-        if st.button("删除此预算", key=f"budget_delete_{budget['id']}"):
+            st.caption(f"Net expense this month {format_money(status.spent_minor, status.currency)}")
+        if st.button("Delete this budget", key=f"budget_delete_{budget['id']}"):
             service.delete_budget(int(budget["id"]))
             st.rerun()
 
 
 def page_settings(service: FinanceService) -> None:
-    st.header("系统设置")
+    st.header("Settings")
     settings = current_settings()
-    host = st.text_input("Ollama 地址", value=settings.ollama_host)
+    host = st.text_input("Ollama address", value=settings.ollama_host)
     detected: list[str] = []
     detect_error = ""
-    if st.button("检测本机模型"):
+    if st.button("Check local models"):
         try:
             detected = list_installed_models(host)
         except Exception as exc:
@@ -942,35 +942,36 @@ def page_settings(service: FinanceService) -> None:
     vision_options = detected or [settings.vision_model]
     if settings.vision_model not in vision_options:
         vision_options = [settings.vision_model, *vision_options]
-    text_model = st.selectbox("文本模型", text_options, index=text_options.index(settings.text_model))
-    vision_model = st.selectbox("视觉模型", vision_options, index=vision_options.index(settings.vision_model))
+    text_model = st.selectbox("Text model", text_options, index=text_options.index(settings.text_model))
+    vision_model = st.selectbox("Vision model", vision_options, index=vision_options.index(settings.vision_model))
     currency = st.selectbox(
-        "默认币种",
+        "Default currency",
         CURRENCIES,
         index=CURRENCIES.index(settings.default_currency) if settings.default_currency in CURRENCIES else 0,
     )
-    timezone_name = st.text_input("时区", value=settings.timezone, help="例如 Europe/Oslo 或 Asia/Shanghai")
+    timezone_name = st.text_input("Timezone", value=settings.timezone, help="For example Europe/Oslo")
     whisper_model = st.selectbox(
-        "语音模型",
+        "Speech model",
         ["tiny", "base", "small", "medium"],
         index=["tiny", "base", "small", "medium"].index(settings.whisper_model)
         if settings.whisper_model in {"tiny", "base", "small", "medium"}
         else 2,
     )
-    device = st.selectbox("语音设备", ["cpu", "cuda", "auto"], index=["cpu", "cuda", "auto"].index(settings.whisper_device))
-    language_labels = {"auto": "自动", "zh": "中文", "en": "英文", "no": "挪威语"}
+    device = st.selectbox("Speech device", ["cpu", "cuda", "auto"], index=["cpu", "cuda", "auto"].index(settings.whisper_device))
+    language_labels = {"auto": "Automatic", "en": "English", "no": "Norwegian"}
+    stored_language = settings.whisper_language if settings.whisper_language in language_labels else "auto"
     language_choice = st.selectbox(
-        "语音语言",
+        "Speech language",
         list(language_labels.values()),
-        index=list(language_labels.keys()).index(settings.whisper_language),
+        index=list(language_labels.keys()).index(stored_language),
     )
     language = {label: code for code, label in language_labels.items()}[language_choice]
-    st.caption("所有交易都会先确认。下面的阈值只用于额外提醒，不会跳过确认。")
+    st.caption("Every transaction is confirmed first. The thresholds below only add a warning.")
     threshold_cols = st.columns(3)
     thresholds = dict(settings.thresholds)
     for column, code in zip(threshold_cols, ("CNY", "NOK", "USD")):
-        thresholds[code] = column.text_input(f"{code} 提醒阈值", value=str(thresholds.get(code, "")), key=f"threshold_{code}")
-    if st.button("保存设置", type="primary"):
+        thresholds[code] = column.text_input(f"{code} warning threshold", value=str(thresholds.get(code, "")), key=f"threshold_{code}")
+    if st.button("Save settings", type="primary"):
         updated = Settings(
             ollama_host=host.strip(),
             text_model=text_model,
@@ -988,29 +989,29 @@ def page_settings(service: FinanceService) -> None:
             ZoneInfo(updated.timezone)
             save_settings(updated)
         except Exception as exc:
-            st.error(f"设置没有保存：{exc}")
+            st.error(f"Settings were not saved: {exc}")
         else:
             st.session_state.settings = load_settings()
-            st.success("设置已保存，只写入本机 data/settings.json。")
-    st.subheader("导出全部有效交易")
-    st.download_button("导出 CSV", data=service.export_csv(), file_name="transactions.csv", mime="text/csv")
+            st.success("Settings saved to data/settings.json on this computer.")
+    st.subheader("Export every active transaction")
+    st.download_button("Export CSV", data=service.export_csv(), file_name="transactions.csv", mime="text/csv")
     st.download_button(
-        "导出 Excel",
+        "Export Excel",
         data=service.export_excel(),
         file_name="transactions.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.caption(f"数据库文件：{DB_PATH}")
-    st.subheader("最近操作")
+    st.caption(f"Database file: {DB_PATH}")
+    st.subheader("Recent activity")
     with get_connection(DB_PATH) as connection:
         logs = list_audit_logs(connection, limit=30)
     st.dataframe(logs, width="stretch", hide_index=True)
-    st.caption("操作记录只保留动作和字段名，不复制金额、商户或描述。")
+    st.caption("The activity log keeps the action and field names only, not amounts, merchants, or descriptions.")
 
 
 @st.cache_data(ttl=30, show_spinner=False)
 def cached_text_model_status(host: str, text_model: str) -> tuple[str, str]:
-    """短时间缓存模型探测，避免每次点击都等待本机 Ollama。"""
+    """Cache the model check briefly so every click does not wait on local Ollama."""
     try:
         models = list_installed_models(host, timeout=2)
     except Exception as exc:
@@ -1021,35 +1022,35 @@ def cached_text_model_status(host: str, text_model: str) -> tuple[str, str]:
 
 
 def render_sidebar() -> str:
-    st.sidebar.title("本地智能记账")
-    st.sidebar.caption("账本保存在本机 SQLite，不使用付费云数据库。")
+    st.sidebar.title("Local ledger")
+    st.sidebar.caption("The ledger is stored in SQLite on this computer. There is no paid cloud database.")
     settings = current_settings()
     status, detail = cached_text_model_status(settings.ollama_host, settings.text_model)
     if status == "error":
-        st.sidebar.error("Ollama 未连接。普通句子仍可用规则解析，收据识别需要先启动 Ollama。")
+        st.sidebar.error("Ollama is not connected. Ordinary sentences still use the rules. Receipts need Ollama.")
     elif status == "ok":
-        st.sidebar.success(f"文本模型已安装：{detail}")
+        st.sidebar.success(f"Text model installed: {detail}")
     else:
-        st.sidebar.warning(f"未在本机找到文本模型 {detail}。简单句式仍可用规则解析。")
+        st.sidebar.warning(f"Text model not found on this computer: {detail}. Simple sentences still use the rules.")
     return st.sidebar.radio(
-        "功能",
-        ["财务总览", "记账助手", "新增交易", "交易记录", "预算设置", "系统设置"],
+        "Pages",
+        ["Overview", "Assistant", "Add transaction", "Transactions", "Budgets", "Settings"],
     )
 
 
 def main() -> None:
-    st.set_page_config(page_title="本地智能记账", page_icon="📒", layout="wide")
+    st.set_page_config(page_title="Local ledger", page_icon="📒", layout="wide")
     ensure_state()
     service = get_service()
     show_flash()
     page = render_sidebar()
     pages = {
-        "财务总览": page_dashboard,
-        "记账助手": page_agent,
-        "新增交易": page_add,
-        "交易记录": page_history,
-        "预算设置": page_budget,
-        "系统设置": page_settings,
+        "Overview": page_dashboard,
+        "Assistant": page_agent,
+        "Add transaction": page_add,
+        "Transactions": page_history,
+        "Budgets": page_budget,
+        "Settings": page_settings,
     }
     pages[page](service)
 

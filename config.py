@@ -1,7 +1,7 @@
-"""应用配置。
+"""Application settings.
 
-路径、币种、分类、时区和 Ollama 连接信息都集中在这里。
-用户在设置页保存的内容写入 data/settings.json，该文件不进入 Git。
+Paths, currencies, categories, the timezone, and the Ollama connection live here.
+Values saved from the settings page go to data/settings.json, which is not committed.
 """
 
 from __future__ import annotations
@@ -13,14 +13,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-# 项目根目录。使用 pathlib，避免写死 Windows 或 macOS 路径。
+# Project root. pathlib keeps the path valid on Windows and macOS.
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "finance.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 EXPORT_DIR = DATA_DIR / "exports"
 
-# 环境变量可以覆盖默认值，方便在不同机器上指向本机 Ollama。
+# Environment variables can point at a local Ollama on another machine.
 DEFAULT_OLLAMA_HOST = os.environ.get("FINANCE_OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_TEXT_MODEL = os.environ.get("FINANCE_TEXT_MODEL", "qwen2.5:7b")
 DEFAULT_VISION_MODEL = os.environ.get("FINANCE_VISION_MODEL", "qwen2.5vl:7b")
@@ -30,7 +30,7 @@ DEFAULT_WHISPER_MODEL = os.environ.get("FINANCE_WHISPER_MODEL", "small")
 DEFAULT_WHISPER_DEVICE = os.environ.get("FINANCE_WHISPER_DEVICE", "cpu")
 DEFAULT_WHISPER_COMPUTE = os.environ.get("FINANCE_WHISPER_COMPUTE", "int8")
 
-# 金额超过阈值时做醒目提示。MVP 阶段无论金额大小都必须确认，阈值不用于跳过确认。
+# Large amounts get an extra warning. Every amount still requires confirmation.
 DEFAULT_THRESHOLDS = {
     "CNY": "500",
     "NOK": "700",
@@ -38,7 +38,7 @@ DEFAULT_THRESHOLDS = {
     "EUR": "70",
 }
 
-# 最小货币单位的小数位数。未列出的币种按 2 位处理。
+# Minor-unit exponent. Currencies not listed use 2 decimal places.
 CURRENCY_EXPONENTS = {
     "NOK": 2,
     "CNY": 2,
@@ -51,60 +51,60 @@ CURRENCY_EXPONENTS = {
 }
 
 EXPENSE_CATEGORIES = [
-    "餐饮",
-    "食品杂货",
-    "交通",
-    "购物",
-    "日用品",
-    "娱乐",
-    "医疗健康",
-    "住房",
-    "水电及公共事业费用",
-    "订阅服务",
-    "旅行",
-    "其他",
+    "Dining",
+    "Groceries",
+    "Transport",
+    "Shopping",
+    "Household",
+    "Entertainment",
+    "Health",
+    "Housing",
+    "Utilities",
+    "Subscriptions",
+    "Travel",
+    "Other",
 ]
 
 INCOME_CATEGORIES = [
-    "工资",
-    "投资收益",
-    "退款",
-    "礼金",
-    "其他收入",
+    "Salary",
+    "Investment",
+    "Refund",
+    "Gift",
+    "Other income",
 ]
 
-# 已知商户只用于建议分类。文本里没有出现的商户不会被写入交易。
+# Known merchants only suggest a category. A merchant that is not in the text is not saved.
 MERCHANT_CATEGORIES = {
-    "Kiwi": "食品杂货",
-    "Rema 1000": "食品杂货",
-    "Meny": "食品杂货",
-    "Coop": "食品杂货",
-    "Bunnpris": "食品杂货",
-    "Extra": "食品杂货",
-    "Netflix": "订阅服务",
-    "Spotify": "订阅服务",
-    "Uber": "交通",
+    "Kiwi": "Groceries",
+    "Rema 1000": "Groceries",
+    "Meny": "Groceries",
+    "Coop": "Groceries",
+    "Bunnpris": "Groceries",
+    "Extra": "Groceries",
+    "Netflix": "Subscriptions",
+    "Spotify": "Subscriptions",
+    "Uber": "Transport",
 }
 
 TRANSACTION_TYPE_LABELS = {
-    "expense": "支出",
-    "income": "收入",
-    "refund": "退款",
+    "expense": "Expense",
+    "income": "Income",
+    "refund": "Refund",
 }
 
 
 def merchant_key(name: str) -> str:
-    """商户记忆用的比较键。忽略大小写和多余空格，不改变展示名称。"""
+    """Comparison key for merchant memory. Case and extra spaces are ignored."""
     return " ".join(name.casefold().split())
 
 
 class ConfigError(ValueError):
-    """配置内容无法使用时抛出。"""
+    """Raised when a setting cannot be used."""
 
 
 @dataclass
 class Settings:
-    """可持久化的用户设置。字段保持简单，便于 JSON 读写。"""
+    """User settings stored as JSON."""
 
     ollama_host: str = DEFAULT_OLLAMA_HOST
     text_model: str = DEFAULT_TEXT_MODEL
@@ -119,39 +119,39 @@ class Settings:
     thresholds: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THRESHOLDS))
 
     def validate(self) -> None:
-        """检查会直接影响连接和金额解释的字段。"""
+        """Check the fields that affect the connection and how amounts are read."""
         validate_ollama_host(self.ollama_host)
         currency = self.default_currency.strip().upper()
         if len(currency) != 3 or not currency.isalpha():
-            raise ConfigError("默认币种必须是 3 位字母代码，例如 NOK 或 CNY。")
+            raise ConfigError("The default currency must be a 3-letter code, such as NOK.")
         self.default_currency = currency
         if not self.timezone.strip():
-            raise ConfigError("时区不能为空。")
+            raise ConfigError("The timezone cannot be empty.")
         if not self.text_model.strip() or not self.vision_model.strip():
-            raise ConfigError("文本模型和视觉模型名称不能为空。")
+            raise ConfigError("The text model and vision model names cannot be empty.")
         if self.whisper_device not in {"cpu", "cuda", "auto"}:
-            raise ConfigError("语音推理设备只能是 cpu、cuda 或 auto。")
-        if self.whisper_language not in {"auto", "zh", "en", "no"}:
-            raise ConfigError("语音语言只能是自动、中文、英文或挪威语。")
+            raise ConfigError("The speech device must be cpu, cuda, or auto.")
+        if self.whisper_language not in {"auto", "en", "no"}:
+            self.whisper_language = "auto"
         cleaned: dict[str, str] = {}
         for code, raw_value in self.thresholds.items():
             normalized = str(code).strip().upper()
             if len(normalized) != 3 or not normalized.isalpha():
-                raise ConfigError(f"阈值币种无效：{code}")
+                raise ConfigError(f"Invalid threshold currency: {code}")
             cleaned[normalized] = str(raw_value).strip()
         self.thresholds = cleaned
 
 
 def validate_ollama_host(host: str) -> str:
-    """只允许 HTTP(S) 地址，避免把图片或文本发到非预期协议。"""
+    """Allow only HTTP(S) so text and images are not sent to another scheme."""
     parsed = urlparse(host.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ConfigError("Ollama 地址必须是 http 或 https URL，例如 http://127.0.0.1:11434。")
+        raise ConfigError("The Ollama address must be an http or https URL, such as http://127.0.0.1:11434.")
     return host.strip().rstrip("/")
 
 
 def load_settings(path: Path | None = None) -> Settings:
-    """读取设置。文件不存在或损坏时返回默认值，不中断应用启动。"""
+    """Load settings. A missing or broken file falls back to the defaults."""
     settings_path = path or SETTINGS_PATH
     if not settings_path.exists():
         settings = Settings()
@@ -175,13 +175,13 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def save_settings(settings: Settings, path: Path | None = None) -> None:
-    """原子写入设置，避免 Streamlit 重跑时写出半份 JSON。"""
+    """Write settings atomically so a Streamlit rerun cannot leave a partial file."""
     settings.validate()
     settings_path = path or SETTINGS_PATH
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = settings_path.with_suffix(".tmp")
     temporary.write_text(
-        json.dumps(asdict(settings), ensure_ascii=False, indent=2),
+        json.dumps(asdict(settings), ensure_ascii=True, indent=2),
         encoding="utf-8",
     )
     temporary.replace(settings_path)

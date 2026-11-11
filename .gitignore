@@ -6,16 +6,16 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# 虚拟环境
+# Virtual environments
 .venv/
 venv/
 env/
 
-# 密钥与本地配置
+# Secrets and local config
 .env
 .streamlit/secrets.toml
 
-# 财务数据库、上传文件、导出文件和用户设置都只留在本机
+# The ledger, uploads, exports, and settings stay on this computer.
 data/*.db
 data/*.db-*
 data/*.sqlite
@@ -25,7 +25,7 @@ data/exports/
 data/settings.json
 data/*.tmp
 
-# 系统文件
+# System files
 .DS_Store
 Thumbs.db
 *.log

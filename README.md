@@ -1,35 +1,35 @@
-# 本地智能记账
+# Local ledger
 
-一个在你自己电脑上运行的个人记账应用。自然语言、收据图片和语音都会先整理成待确认草稿，你核对后才写入本机 SQLite。金额汇总、重复判断、退款和预算都不交给大模型计算。
+A personal finance app that runs on your own computer. English and Norwegian sentences, receipt images, and speech become drafts first. They are written to the local SQLite database only after you confirm them. Totals, duplicates, refunds, and budgets are not calculated by a language model.
 
-默认不调用付费云 API。文本和收据只发给设置里的 Ollama 地址，默认是 `http://127.0.0.1:11434`。语音由本机的 faster-whisper 转写。
+By default it does not call a paid cloud API. Text and receipts go only to the Ollama address in settings, which is `http://127.0.0.1:11434` unless you change it. Speech is transcribed on this computer by faster-whisper.
 
-## 目录
+## Layout
 
 ```text
 ai-finance-agent/
-├── app.py                 # Streamlit 界面
-├── agent.py               # 多轮记账、账本问答和改分类预览
-├── ai_parser.py           # 自然语言解析与 Ollama 调用
-├── receipt_parser.py      # 收据和截图识别
-├── voice_parser.py        # 本地语音转文字
-├── finance_service.py     # 金额、去重、退款、预算、统计、导出
-├── database.py            # SQLite 读写
-├── db_setup.py            # 建库和预设分类
-├── config.py              # 路径、币种、模型配置
+├── app.py                 # Streamlit interface
+├── agent.py               # Multi-turn drafts, ledger questions, category preview
+├── ai_parser.py           # Natural-language parsing and Ollama
+├── receipt_parser.py      # Receipts and screenshots
+├── voice_parser.py        # Local speech to text
+├── finance_service.py     # Money, duplicates, refunds, budgets, export
+├── database.py            # SQLite access
+├── db_setup.py            # Schema and built-in categories
+├── config.py              # Paths, currencies, model settings
 ├── requirements.txt
-├── data/                  # 数据库、设置和导出，不进入 Git
+├── data/                  # Database, settings, and exports; not in Git
 └── tests/
 ```
 
-## 环境要求
+## Requirements
 
-- Python 3.11 或更高版本
-- Windows 11 或 macOS（含 Apple Silicon）
-- 可选：本机 [Ollama](https://ollama.com/)，用于自然语言增强和收据识别
-- 不需要 NVIDIA 显卡。Windows 上如果要让语音走 GPU，可在设置里把设备改成 `cuda`；失败时会自动回到 CPU。macOS 上的 Ollama 会使用 Apple Metal，faster-whisper 默认使用 CPU。
+- Python 3.11 or newer
+- Windows 11 or macOS (including Apple Silicon)
+- Optional: local [Ollama](https://ollama.com/) for richer sentences and receipt reading
+- An NVIDIA GPU is not required. On Windows, set the speech device to `cuda` if you want the GPU; if that fails, it falls back to CPU. On macOS, Ollama uses Apple Metal and faster-whisper stays on CPU.
 
-## Windows 11（PowerShell）
+## Windows 11 (PowerShell)
 
 ```powershell
 cd $HOME\ai-finance-agent
@@ -39,23 +39,23 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-如果激活脚本被执行策略拦住，可以只对当前窗口放行：
+If the activation script is blocked, allow it for the current window only:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-安装 Ollama 后拉取模型：
+After installing Ollama, pull the models:
 
 ```powershell
 ollama pull qwen2.5:7b
 ollama pull qwen2.5vl:7b
 ```
 
-内存比较紧张时，文本模型可以改用 `qwen2.5:3b`，再到应用的“系统设置”里选择它。
+If memory is tight, use `qwen2.5:3b` for text and select it under Settings.
 
-初始化数据库、运行测试并启动：
+Initialize the database, run the tests, and start the app:
 
 ```powershell
 python db_setup.py
@@ -63,9 +63,9 @@ python -m pytest -q
 streamlit run app.py
 ```
 
-浏览器会打开本地页面，通常是 `http://localhost:8501`。
+The browser opens the local page, usually `http://localhost:8501`. On Windows, `launch_app.py` can open the same page in a desktop window.
 
-## macOS（Terminal，含 Apple Silicon）
+## macOS (Terminal, including Apple Silicon)
 
 ```bash
 cd ~/ai-finance-agent
@@ -75,21 +75,21 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-安装 Ollama 可以使用官网安装包，或：
+Install Ollama from its site, or with:
 
 ```bash
 brew install ollama
 ollama serve
 ```
 
-另一个终端里拉取模型：
+In another terminal, pull the models:
 
 ```bash
 ollama pull qwen2.5:7b
 ollama pull qwen2.5vl:7b
 ```
 
-然后：
+Then:
 
 ```bash
 python db_setup.py
@@ -97,43 +97,44 @@ python -m pytest -q
 streamlit run app.py
 ```
 
-## 日常使用
+## Daily use
 
-1. 在“记账助手”里连续说话。例如先说一笔账，再说「改成上周三」或「商户是 Kiwi」。也可以问「这个月餐饮花了多少」。一句话里的多笔账会拆开，逐笔确认。问账和改分类都先给出结果，确认后才写入。
-2. 在“新增交易”里输入一句话、上传收据，或录音。
-3. 核对日期、金额、币种、分类、收支类型、描述和商户。确认保存后，会记住这个商户对应的分类。
-4. 如果提示可能重复，需要勾选后才能保存。旧记录不会被覆盖。
-5. 退款要选择原来的支出。退款单独记账，并冲减该分类的净支出。
-6. 在“预算设置”里按币种设置每月总预算或分类预算。达到 80% 和超过 100% 时，总览顶部会显示红色警告。某分类明显高于你前三个月的水平时，总览也会提示。
-7. 在“交易记录”或“系统设置”导出 CSV 和 Excel。可以说「把上个月打车都归到交通」，先看预览，再确认才改分类。
+1. Open Assistant and keep talking. Record one entry, then say "change it to last Wednesday" or "merchant is Kiwi". You can also ask "how much did Dining cost this month". Several amounts in one sentence are split and confirmed one by one. Questions and category changes are shown first and written only after you confirm.
+2. Open Add transaction to type a sentence, upload a receipt, or record speech.
+3. Check the date, amount, currency, category, type, description, and merchant. After you save, that merchant's category is remembered.
+4. If a similar past entry is found, tick the checkbox before saving. The old row is not overwritten.
+5. A refund must point at the original expense. It is stored as its own row and reduces that category's net expense.
+6. Under Budgets, set a monthly total or a category limit for one currency. At 80% and above 100%, Overview shows a warning. A category that is well above your previous three months is also flagged.
+7. Export CSV or Excel from Transactions or Settings. You can say "move all last month taxi to Transport", review the preview, and confirm before any category changes.
 
-可以试这几句：
+Try these:
 
-- 中午吃了火锅，花了120元。
-- 今天在 Kiwi 买菜花了350 NOK。
-- 今天收到工资45000 NOK。
-- 昨天坐公交花了50克朗。
+- Lunch cost 120 yuan today.
+- Spent 350 NOK at Kiwi today.
+- Received salary 45000 NOK today.
+- Yesterday the bus cost 50 kroner.
+- I dag brukte jeg 80 kroner.
 
-没有写日期时，程序会按设置里的时区暂填今天，并要求你确认。没有写币种时使用默认币种。模型如果补充了原文里不存在的商户或金额，会被丢掉。
+If the date is missing, the app fills in today in your timezone and asks you to confirm. If the currency is missing, it uses the default. A merchant or amount that the model adds but that is not in your sentence is dropped.
 
-Ollama 没启动时，常见中文和英文句式仍会用规则解析，页面会显示连接失败。收据识别必须有本机视觉模型，不会改用猜测结果。
+When Ollama is not running, common English and Norwegian sentences still use the rules, and the page says the connection failed. Receipts need the local vision model. The app does not guess a receipt.
 
-第一次使用语音时，faster-whisper 会把开源模型下载到本机缓存。音频文件只在转写时临时落盘，转写后删除，不会上传到语音识别服务。
+The first time you use speech, faster-whisper downloads an open model into the local cache. The audio file exists only while it is being transcribed, then it is deleted. It is not uploaded to a speech service.
 
-## 数据放在哪里
+## Where the data lives
 
-- 数据库：`data/finance.db`
-- 个人设置：`data/settings.json`
-- 这两个文件以及上传目录都在 `.gitignore` 里
+- Database: `data/finance.db`
+- Settings: `data/settings.json`
+- Both, and the upload folder, are listed in `.gitignore`
 
-金额以最小货币单位的整数保存。人民币和挪威克朗保留两位小数。不同币种不会相加，也不做汇率换算。
+Amounts are stored as integer minor units. NOK keeps two decimal places. Currencies are never added together, and there is no exchange-rate conversion.
 
-删除是软删除。审计记录只保存“改了哪些字段”，不复制金额、商户和描述。交易本身仍留在数据库里，可以恢复。
+Delete is a soft delete. The audit log stores field names only, not amounts, merchants, or descriptions. The transaction row remains and can be restored.
 
-## 测试
+## Tests
 
 ```bash
 python -m pytest -q
 ```
 
-测试覆盖金额舍入、数据库事务、外键、重复交易、退款上限、预算警告、分类统计、CSV/Excel 导出、记账助手的草稿修改和账本问答，以及不依赖 Ollama 的解析规则。语音测试使用假的转写器，不会下载模型。
+The tests cover rounding, database transactions, foreign keys, duplicates, refund limits, budget warnings, category totals, CSV and Excel export, draft edits, ledger questions, and the rule parser without Ollama. The speech test uses a fake transcriber and does not download a model.

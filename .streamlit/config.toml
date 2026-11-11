@@ -1,4 +1,4 @@
-# 关闭 Streamlit 使用情况回传，避免本地财务应用向外发送统计信息。
+# Do not send Streamlit usage stats from this local finance app.
 [browser]
 gatherUsageStats = false
 

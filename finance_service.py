@@ -1,7 +1,7 @@
-"""财务业务规则。
+"""Finance rules.
 
-金额换算、重复判断、退款上限、预算和统计都在这里用 Decimal 与整数完成。
-语言模型不参与任何汇总计算。
+Money conversion, duplicates, refund limits, budgets, and totals are done here with Decimal and integers.
+The language model does not calculate any total.
 """
 
 from __future__ import annotations
@@ -45,16 +45,16 @@ _VALID_SOURCES = {"text", "receipt", "voice", "manual", "refund"}
 
 
 class DuplicateTransactionError(ValueError):
-    """存在相似历史交易，且调用方没有明确允许继续保存。"""
+    """A similar past transaction exists, and the caller did not explicitly allow the save."""
 
     def __init__(self, report: "DuplicateReport") -> None:
-        super().__init__("发现相似交易，请确认后保存。")
+        super().__init__("A similar transaction was found. Confirm before saving.")
         self.report = report
 
 
 @dataclass
 class DuplicateReport:
-    """重复检查结果。exact 是完全相同，suspected 是同日同额且商户或描述接近。"""
+    """Duplicate check. exact is identical. suspected is the same day and amount with a close merchant or description."""
 
     exact: list[dict] = field(default_factory=list)
     suspected: list[dict] = field(default_factory=list)
@@ -66,7 +66,7 @@ class DuplicateReport:
 
 @dataclass
 class BudgetStatus:
-    """某币种总预算或分类预算在指定月份的使用情况。"""
+    """How much of one currency's overall or category budget was used in a month."""
 
     budget_id: int
     currency: str
@@ -79,7 +79,7 @@ class BudgetStatus:
 
 @dataclass
 class CurrencySummary:
-    """单一币种的统计结果。不同币种不会加总。"""
+    """Totals for one currency. Different currencies are not added together."""
 
     currency: str
     total_income_minor: int
@@ -95,16 +95,16 @@ class CurrencySummary:
 
 
 def minor_exponent(currency: str) -> int:
-    """返回币种的小数位数。未知币种按分或欧分处理。"""
+    """Decimal places for a currency. An unknown currency uses 2."""
     return CURRENCY_EXPONENTS.get(currency.upper(), 2)
 
 
 def to_minor(amount: Decimal, currency: str) -> int:
-    """把 Decimal 金额转换为最小货币单位。负数会被拒绝。"""
+    """Convert a Decimal amount to minor units. A negative amount is rejected."""
     if not isinstance(amount, Decimal):
         amount = Decimal(str(amount))
     if amount < 0:
-        raise ValueError("金额不能为负数。")
+        raise ValueError("The amount cannot be negative.")
     exponent = minor_exponent(currency)
     quant = Decimal(1).scaleb(-exponent)
     quantized = amount.quantize(quant, rounding=ROUND_HALF_UP)
@@ -113,14 +113,14 @@ def to_minor(amount: Decimal, currency: str) -> int:
 
 
 def from_minor(amount_minor: int, currency: str) -> Decimal:
-    """把最小货币单位还原为 Decimal。"""
+    """Convert minor units back to a Decimal."""
     exponent = minor_exponent(currency)
     quant = Decimal(1).scaleb(-exponent)
     return (Decimal(amount_minor) / (Decimal(10) ** exponent)).quantize(quant)
 
 
 def format_amount(amount_minor: int, currency: str) -> str:
-    """格式化金额，不附带币种代码。"""
+    """Format an amount without the currency code."""
     value = from_minor(amount_minor, currency)
     exponent = minor_exponent(currency)
     if exponent == 0:
@@ -129,7 +129,7 @@ def format_amount(amount_minor: int, currency: str) -> str:
 
 
 def format_money(amount_minor: int, currency: str) -> str:
-    """格式化金额并附带币种代码。"""
+    """Format an amount with its currency code."""
     return f"{format_amount(amount_minor, currency)} {currency.upper()}"
 
 
@@ -161,11 +161,11 @@ def _period_key(iso_date: str, frequency: str) -> str:
         return f"{iso.year}-W{iso.week:02d}"
     if frequency == "month":
         return f"{current.year}-{current.month:02d}"
-    raise ValueError("统计周期只支持 day、week 或 month。")
+    raise ValueError("The period must be day, week, or month.")
 
 
 def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
-    """按公历月份平移。delta 为负表示往前。"""
+    """Shift a calendar month. A negative delta moves backward."""
     index = year * 12 + (month - 1) + delta
     return index // 12, index % 12 + 1
 
@@ -176,12 +176,12 @@ def _month_bounds(year: int, month: int) -> tuple[str, str]:
         end = date(year + 1, 1, 1)
     else:
         end = date(year, month + 1, 1)
-    # 结束日用月末，因为列表查询是闭区间。
+    # The end date is the last day of the month because list queries are inclusive.
     return start.isoformat(), (end.fromordinal(end.toordinal() - 1)).isoformat()
 
 
 def decorate(row: dict) -> dict:
-    """补充界面和导出使用的金额字符串。计算仍以 amount_minor 为准。"""
+    """Add display amount strings for the interface and export. Calculations still use amount_minor."""
     item = dict(row)
     item["amount"] = format_amount(int(row["amount_minor"]), row["currency"])
     item["type_label"] = TRANSACTION_TYPE_LABELS.get(row["transaction_type"], row["transaction_type"])
@@ -189,7 +189,7 @@ def decorate(row: dict) -> dict:
 
 
 def _excel_safe(value: object) -> object:
-    """防止表格软件把以等号开头的描述当成公式。"""
+    """Stop a spreadsheet from treating a description that starts with = as a formula."""
     if isinstance(value, str) and value[:1] in {"=", "+", "-", "@"}:
         return "'" + value
     return value
@@ -203,7 +203,7 @@ def _has_currency_expense(rows: list[dict], currency: str) -> bool:
 
 
 def _spent_by_category(rows: list[dict], currency: str) -> dict[str, int]:
-    """同一币种下各分类的净支出。退款冲减原交易分类。"""
+    """Net expense by category for one currency. A refund reduces the original category."""
     names: list[str] = []
     for row in rows:
         if row["currency"] != currency:
@@ -220,7 +220,7 @@ def _spent_by_category(rows: list[dict], currency: str) -> dict[str, int]:
 
 
 def _merchant_display(rows: list[dict], currency: str) -> dict[str, str]:
-    """返回商户比较键和最近一笔的展示名称。"""
+    """Return a merchant comparison key and the display name from the latest row."""
     found: dict[str, str] = {}
     for row in rows:
         if row["currency"] != currency or row["transaction_type"] != "expense":
@@ -233,7 +233,7 @@ def _merchant_display(rows: list[dict], currency: str) -> dict[str, str]:
 
 
 def net_spent_minor(rows: list[dict], currency: str, category_name: str | None = None) -> int:
-    """计算净支出。退款冲减原交易分类，不计入工资或投资收益。"""
+    """Net expense. A refund reduces the original category and is not treated as salary or investment income."""
     total = 0
     for row in rows:
         if row["currency"] != currency or row.get("is_deleted"):
@@ -249,14 +249,14 @@ def net_spent_minor(rows: list[dict], currency: str, category_name: str | None =
 
 
 class FinanceService:
-    """面向界面的财务操作入口。每次写入都在同一个数据库事务中完成。"""
+    """Finance operations used by the interface. Each write runs in one database transaction."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         init_database(self.db_path)
 
     def merchant_memories(self) -> dict[str, str]:
-        """返回商户比较键到分类名的映射。内置商户表不在这里。"""
+        """Map a merchant comparison key to a category name. Built-in merchants are not included."""
         with get_connection(self.db_path) as connection:
             rows = list_merchant_memories(connection)
         return {row["merchant_key"]: row["category_name"] for row in rows}
@@ -267,7 +267,7 @@ class FinanceService:
         category_name: str,
         transaction_type: str,
     ) -> None:
-        """用户确认支出后记住商户分类。没有商户、或不是支出时不写。"""
+        """Remember a merchant category after the user confirms an expense. Skip rows with no merchant, and skip non-expenses."""
         if transaction_type != "expense" or not merchant or not merchant.strip():
             return
         if category_name not in EXPENSE_CATEGORIES:
@@ -280,9 +280,9 @@ class FinanceService:
         logger.info("merchant memory saved category=%s", category_name)
 
     def recategorize(self, transaction_ids: list[int], category_name: str) -> int:
-        """把预览中的支出改到新分类。调用前必须已经让用户确认。"""
+        """Move the previewed expenses to a new category. The user must already have confirmed."""
         if category_name not in EXPENSE_CATEGORIES:
-            raise ValueError("只能把支出改到已有的支出分类。")
+            raise ValueError("An expense can only be moved to an existing expense category.")
         updated = 0
         for transaction_id in transaction_ids:
             with get_connection(self.db_path) as connection:
@@ -309,7 +309,7 @@ class FinanceService:
         return updated
 
     def spending_insights(self, today: date) -> list[str]:
-        """根据本人历史给出提醒。比较和阈值都在这里完成，不交给模型。"""
+        """Reminders from this person's own history. The comparison and thresholds are calculated here, not by a model."""
         notes: list[str] = []
         current_rows = self._month_rows(today.year, today.month)
         previous: list[list[dict]] = []
@@ -335,26 +335,26 @@ class FinanceService:
                         continue
                     if Decimal(spent) >= average * Decimal("1.5") and Decimal(spent) - average >= Decimal(floor):
                         notes.append(
-                            f"本月{name}净支出 {format_money(spent, currency)}，"
-                            f"高于前三个月平均 {format_money(int(average), currency)}。"
-                            "这是根据你自己的历史记录计算的提醒。"
+                            f"This month {name} net expense is {format_money(spent, currency)}, "
+                            f"above the previous three-month average of {format_money(int(average), currency)}. "
+                            "This reminder is calculated from your own history."
                         )
             other_count = sum(
                 1
                 for row in current_rows
                 if row["currency"] == currency
                 and row["transaction_type"] == "expense"
-                and row.get("category_name") == "其他"
+                and row.get("category_name") == "Other"
             )
             if other_count >= 3:
-                notes.append(f"本月有 {other_count} 笔 {currency} 支出归在「其他」，可以让记账助手帮你归类。")
+                notes.append(f"This month has {other_count} {currency} expenses in Other. The assistant can help recategorize them.")
             current_merchants = _merchant_display(current_rows, currency)
             for key, display in current_merchants.items():
                 hits = sum(1 for rows in previous if key in _merchant_display(rows, currency))
                 if hits >= 2:
                     notes.append(
-                        f"{display} 在本月以及之前三个月里的至少两个月都有支出。"
-                        "这只是重复出现的提醒，不会自动记账。"
+                        f"{display} appears this month and in at least two of the previous three months. "
+                        "This is only a reminder; nothing is recorded automatically."
                     )
         return notes[:8]
 
@@ -380,7 +380,7 @@ class FinanceService:
         keyword: str | None = None,
         include_deleted: bool = False,
     ) -> list[dict]:
-        """按筛选条件读取交易，并附上可显示的金额。"""
+        """Read transactions for the filters and attach a display amount."""
         with get_connection(self.db_path) as connection:
             rows = list_transactions(
                 connection,
@@ -409,7 +409,7 @@ class FinanceService:
         source: str = "manual",
         allow_duplicate: bool = False,
     ) -> int:
-        """确认后的交易写入数据库。存在相似记录时必须显式允许。"""
+        """Write a confirmed transaction. A similar existing row requires an explicit allow."""
         prepared = self._prepare(
             transaction_date=transaction_date,
             amount=amount,
@@ -435,7 +435,7 @@ class FinanceService:
                     prepared["currency"],
                 )
             elif prepared["original_transaction_id"] is not None:
-                raise ValueError("只有退款可以关联原交易。")
+                raise ValueError("Only a refund can be linked to an original transaction.")
             transaction_id = insert_transaction(
                 connection,
                 {
@@ -474,7 +474,7 @@ class FinanceService:
         original_transaction_id: int | None = None,
         allow_duplicate: bool = False,
     ) -> None:
-        """修改未删除的交易，并重新检查退款上限和重复。"""
+        """Edit a transaction that is not deleted, and check the refund limit and duplicates again."""
         prepared = self._prepare(
             transaction_date=transaction_date,
             amount=amount,
@@ -490,7 +490,7 @@ class FinanceService:
         with get_connection(self.db_path) as connection:
             current = get_transaction(connection, transaction_id)
             if current is None or current["is_deleted"]:
-                raise KeyError("交易不存在或已删除。")
+                raise KeyError("The transaction does not exist or is already deleted.")
             self._assert_existing_refunds_still_fit(connection, current, prepared)
             report = self._duplicates_on(connection, prepared, exclude_id=transaction_id)
             if report.has_any and not allow_duplicate:
@@ -522,24 +522,24 @@ class FinanceService:
         logger.info("transaction updated id=%s", transaction_id)
 
     def delete_transaction(self, transaction_id: int, *, confirmed: bool) -> None:
-        """软删除。仍有有效退款的支出不能删除，历史退款也不会被自动清掉。"""
+        """Soft-delete. An expense that still has an active refund cannot be deleted, and old refunds are not removed automatically."""
         if not confirmed:
-            raise ValueError("删除前需要确认。")
+            raise ValueError("Confirm before deleting.")
         with get_connection(self.db_path) as connection:
             current = get_transaction(connection, transaction_id)
             if current is None or current["is_deleted"]:
-                raise KeyError("交易不存在或已删除。")
+                raise KeyError("The transaction does not exist or is already deleted.")
             if current["transaction_type"] == "expense" and sum_refunds_for(connection, transaction_id) > 0:
-                raise ValueError("这笔支出仍有关联退款，不能删除。")
+                raise ValueError("This expense still has a refund, so it cannot be deleted.")
             soft_delete_transaction(connection, transaction_id)
         logger.info("transaction soft-deleted id=%s", transaction_id)
 
     def restore_transaction(self, transaction_id: int) -> None:
-        """恢复软删除记录。恢复退款时重新检查是否超过原交易余额。"""
+        """Restore a soft-deleted row. Restoring a refund checks the remaining balance on the original expense again."""
         with get_connection(self.db_path) as connection:
             current = get_transaction(connection, transaction_id)
             if current is None or not current["is_deleted"]:
-                raise KeyError("交易不存在或并未删除。")
+                raise KeyError("The transaction does not exist or is not deleted.")
             if current["transaction_type"] == "refund":
                 self._assert_refund_capacity(
                     connection,
@@ -562,13 +562,13 @@ class FinanceService:
         merchant: str | None,
         exclude_id: int | None = None,
     ) -> DuplicateReport:
-        """供确认界面提前展示相似交易。真正写入时会再检查一次。"""
+        """Show similar transactions on the confirmation form. The write checks again."""
         code = currency.strip().upper()
         if transaction_type not in _VALID_TYPES:
-            raise ValueError("交易类型无效。")
+            raise ValueError("Invalid transaction type.")
         amount_minor = to_minor(Decimal(amount), code)
         if amount_minor <= 0:
-            raise ValueError("请填写大于 0 的金额。")
+            raise ValueError("Enter an amount greater than 0.")
         prepared = {
             "transaction_date": transaction_date.isoformat(),
             "amount_minor": amount_minor,
@@ -590,11 +590,11 @@ class FinanceService:
         end_date: date | None = None,
         exclude_refund_id: int | None = None,
     ) -> tuple[list[dict], str]:
-        """查找仍有可退余额的支出。没有严格匹配时放宽商户或日期，并说明原因。"""
+        """Find expenses that still have a refundable balance. If a strict match fails, widen the merchant or date and say why."""
         currency = currency.upper()
         amount_minor = to_minor(amount, currency)
         if amount_minor <= 0:
-            raise ValueError("请填写大于 0 的金额。")
+            raise ValueError("Enter an amount greater than 0.")
         with get_connection(self.db_path) as connection:
             rows = list_transactions(
                 connection,
@@ -623,7 +623,7 @@ class FinanceService:
             if matched:
                 pool = matched
             else:
-                note_parts.append("没有商户一致的支出，已改为按金额和币种列出。")
+                note_parts.append("No expense with the same merchant was found, so the list uses amount and currency.")
         if start_date and end_date:
             start_text = start_date.isoformat()
             end_text = end_date.isoformat()
@@ -633,7 +633,7 @@ class FinanceService:
             if ranged:
                 pool = ranged
             else:
-                note_parts.append("指定日期范围内没有匹配，已放宽日期。")
+                note_parts.append("Nothing matched that date range, so the date filter was widened.")
         return pool, " ".join(note_parts)
 
     def set_budget(
@@ -643,7 +643,7 @@ class FinanceService:
         currency: str,
         amount: Decimal,
     ) -> int:
-        """设置月度总支出预算或某个支出分类的预算。"""
+        """Set a monthly total budget or a budget for one expense category."""
         currency = currency.upper()
         limit_minor = to_minor(amount, currency)
         with get_connection(self.db_path) as connection:
@@ -651,7 +651,7 @@ class FinanceService:
             if category_name:
                 category = get_category_by_name(connection, category_name, "expense")
                 if category is None:
-                    raise ValueError("只能为支出分类设置预算。")
+                    raise ValueError("Budgets can only be set for an expense category.")
                 category_id = int(category["id"])
             return upsert_budget(
                 connection,
@@ -672,7 +672,7 @@ class FinanceService:
         return rows
 
     def budget_status(self, *, year: int, month: int) -> list[BudgetStatus]:
-        """按入账日期计算当月净支出，并给出 80% 和 100% 两档状态。"""
+        """Net expense for the month of the transaction date, with 80% and 100% status."""
         start, end = _month_bounds(year, month)
         with get_connection(self.db_path) as connection:
             budgets = list_budgets(connection)
@@ -719,7 +719,7 @@ class FinanceService:
         keyword: str | None = None,
         frequency: str = "month",
     ) -> list[CurrencySummary]:
-        """用数据库中的真实记录汇总。筛选到多种币种时分别返回。"""
+        """Summarize the rows in the database. Each currency in the filter is returned separately."""
         rows = self.list_transaction_rows(
             start_date=start_date,
             end_date=end_date,
@@ -745,7 +745,7 @@ class FinanceService:
         keyword: str | None = None,
         include_deleted: bool = False,
     ) -> pd.DataFrame:
-        """生成导出表。日期使用 YYYY-MM-DD，金额使用定点十进制字符串。"""
+        """Build the export table. Dates are YYYY-MM-DD and amounts are fixed-point decimal strings."""
         rows = self.list_transaction_rows(
             start_date=start_date,
             end_date=end_date,
@@ -759,58 +759,58 @@ class FinanceService:
         for row in rows:
             exported.append(
                 {
-                    "交易编号": row["id"],
-                    "日期": row["transaction_date"],
-                    "金额": format_amount(int(row["amount_minor"]), row["currency"]).replace(",", ""),
-                    "币种": row["currency"],
-                    "交易类型": row["transaction_type"],
-                    "类型名称": row["type_label"],
-                    "分类": _excel_safe(row.get("category_name") or ""),
-                    "描述": _excel_safe(row.get("description") or ""),
-                    "商户": _excel_safe(row.get("merchant") or ""),
-                    "账户": _excel_safe(row.get("account_name") or ""),
-                    "原交易编号": row.get("original_transaction_id") or "",
-                    "来源": row.get("source") or "",
-                    "创建时间": row.get("created_at") or "",
-                    "更新时间": row.get("updated_at") or "",
+                    "id": row["id"],
+                    "date": row["transaction_date"],
+                    "amount": format_amount(int(row["amount_minor"]), row["currency"]).replace(",", ""),
+                    "currency": row["currency"],
+                    "transaction_type": row["transaction_type"],
+                    "type_label": row["type_label"],
+                    "category": _excel_safe(row.get("category_name") or ""),
+                    "description": _excel_safe(row.get("description") or ""),
+                    "merchant": _excel_safe(row.get("merchant") or ""),
+                    "account": _excel_safe(row.get("account_name") or ""),
+                    "original_id": row.get("original_transaction_id") or "",
+                    "source": row.get("source") or "",
+                    "created_at": row.get("created_at") or "",
+                    "updated_at": row.get("updated_at") or "",
                 }
             )
         columns = [
-            "交易编号",
-            "日期",
-            "金额",
-            "币种",
-            "交易类型",
-            "类型名称",
-            "分类",
-            "描述",
-            "商户",
-            "账户",
-            "原交易编号",
-            "来源",
-            "创建时间",
-            "更新时间",
+            "id",
+            "date",
+            "amount",
+            "currency",
+            "transaction_type",
+            "type_label",
+            "category",
+            "description",
+            "merchant",
+            "account",
+            "original_id",
+            "source",
+            "created_at",
+            "updated_at",
         ]
         frame = pd.DataFrame(exported, columns=columns)
-        # 金额和日期保持文本，避免 pandas 把 120.50 收成浮点 120.5。
+        # Keep amount and date as text so pandas does not turn 120.50 into the float 120.5.
         for column in columns:
             frame[column] = frame[column].map(lambda value: "" if value is None else str(value))
         return frame
 
     def export_csv(self, **filters: object) -> bytes:
-        """导出 UTF-8 BOM CSV，方便 Excel 直接打开中文。"""
+        """Export a UTF-8 BOM CSV so Excel opens it directly."""
         frame = self.export_frame(**filters)
         return frame.to_csv(index=False).encode("utf-8-sig")
 
     def export_excel(self, **filters: object) -> bytes:
-        """导出 xlsx。openpyxl 负责写入工作簿。"""
+        """Export xlsx. openpyxl writes the workbook."""
         frame = self.export_frame(**filters)
         buffer = BytesIO()
         frame.to_excel(buffer, index=False, engine="openpyxl")
         return buffer.getvalue()
 
     def _summarize_currency(self, rows: list[dict], currency: str, frequency: str) -> CurrencySummary:
-        """用 pandas 对同一币种做分组汇总，金额列保持整数最小单位。"""
+        """Group one currency with pandas. The amount column stays in integer minor units."""
         selected = [row for row in rows if row["currency"] == currency]
         empty_buckets = {"income": 0, "expense": 0, "refund": 0}
         if not selected:
@@ -850,7 +850,7 @@ class FinanceService:
         expense_rows = frame[frame["transaction_type"] == "expense"]
         refund_rows = frame[frame["transaction_type"] == "refund"].copy()
         if not refund_rows.empty:
-            refund_rows["category_name"] = refund_rows["original_category_name"].fillna("其他")
+            refund_rows["category_name"] = refund_rows["original_category_name"].fillna("Other")
         categories: dict[str, int] = {}
         if not expense_rows.empty:
             for name, value in expense_rows.groupby("category_name")["amount_minor"].sum().items():
@@ -887,24 +887,24 @@ class FinanceService:
         original_transaction_id: int | None,
         source: str,
     ) -> dict:
-        """统一校验并生成数据库需要的字段。"""
+        """Validate the input and build the fields the database needs."""
         if not isinstance(transaction_date, date):
-            raise ValueError("日期无效。")
+            raise ValueError("The date is invalid.")
         if transaction_date < date(2000, 1, 1) or transaction_date > date(2100, 12, 31):
-            raise ValueError("日期超出可记录范围。")
+            raise ValueError("The date is outside the supported range.")
         code = currency.strip().upper()
         if len(code) != 3 or not code.isalpha():
-            raise ValueError("币种必须是 3 位字母。")
+            raise ValueError("The currency must be 3 letters.")
         if transaction_type not in _VALID_TYPES:
-            raise ValueError("交易类型无效。")
+            raise ValueError("Invalid transaction type.")
         if source not in _VALID_SOURCES:
-            raise ValueError("交易来源无效。")
+            raise ValueError("Invalid transaction source.")
         amount_minor = to_minor(Decimal(amount), code)
         if amount_minor <= 0:
-            raise ValueError("请填写大于 0 的金额。")
-        category = "退款" if transaction_type == "refund" else category_name.strip()
+            raise ValueError("Enter an amount greater than 0.")
+        category = "Refund" if transaction_type == "refund" else category_name.strip()
         if transaction_type == "refund" and original_transaction_id is None:
-            raise ValueError("退款必须选择原始支出。")
+            raise ValueError("A refund must point at the original expense.")
         if transaction_type != "refund":
             original_transaction_id = None
         return {
@@ -928,7 +928,7 @@ class FinanceService:
             prepared["category_kind"],
         )
         if category is None:
-            raise ValueError("分类不适用于该交易类型。")
+            raise ValueError("That category does not apply to this transaction type.")
         account_id = None
         if prepared["account_name"]:
             account_id = get_or_create_account(
@@ -946,20 +946,20 @@ class FinanceService:
         currency: str,
         exclude_id: int | None = None,
     ) -> None:
-        """退款累计不能超过原支出尚未退还的部分。"""
+        """Refunds cannot add up to more than the part of the original expense that is still unrefunded."""
         original = get_transaction(connection, original_id)
         if original is None or original["is_deleted"]:
-            raise ValueError("原交易不存在。")
+            raise ValueError("The original transaction does not exist.")
         if original["transaction_type"] != "expense":
-            raise ValueError("只能对支出办理退款。")
+            raise ValueError("A refund can only be applied to an expense.")
         if original["currency"] != currency:
-            raise ValueError("退款币种必须与原交易相同。")
+            raise ValueError("The refund currency must match the original transaction.")
         refunded = sum_refunds_for(connection, original_id, exclude_id=exclude_id)
         if amount_minor + refunded > int(original["amount_minor"]):
-            raise ValueError("退款金额超过原交易尚未退还的金额。")
+            raise ValueError("The refund is larger than the amount still available on the original expense.")
 
     def _assert_existing_refunds_still_fit(self, connection, current: dict, prepared: dict) -> None:
-        """已有退款的支出不能被改得比已退金额更小，也不能改成别的币种。"""
+        """An expense that already has a refund cannot be made smaller than the refunded amount, or switched to another currency."""
         if current["transaction_type"] != "expense":
             return
         refunded = sum_refunds_for(connection, int(current["id"]))
@@ -970,10 +970,10 @@ class FinanceService:
             or prepared["currency"] != current["currency"]
             or prepared["amount_minor"] < refunded
         ):
-            raise ValueError("这笔支出已有退款，修改后必须仍能覆盖已退金额。")
+            raise ValueError("This expense already has a refund. The edited amount must still cover it.")
 
     def _duplicates_on(self, connection, prepared: dict, exclude_id: int | None) -> DuplicateReport:
-        """用日期、金额、币种、商户和描述做确定性比对。"""
+        """Compare date, amount, currency, merchant, and description with deterministic rules."""
         rows = list_transactions(
             connection,
             currency=prepared["currency"],

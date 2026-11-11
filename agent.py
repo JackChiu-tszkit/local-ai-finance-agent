@@ -1,8 +1,9 @@
-"""本地记账助手。
+"""Local bookkeeping assistant.
 
-助手可以连续修改待确认草稿、把一句话拆成多笔，并用数据库回答账本问题。
-金额、笔数、预算和退款余额都由财务服务计算。这里不会直接写入交易。
-批量改分类只生成预览，必须由用户再确认一次。
+It can edit a pending draft, split one sentence into several drafts, and
+answer questions from the database. Amounts, counts, budgets, and refund
+balances are calculated by the finance service. Nothing is written here.
+A batch category change is only a preview until the user confirms it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from decimal import Decimal
 
 from ai_parser import (
     TransactionDraft,
+    _WEEKDAY_ALT,
     _mark_clarification,
     apply_merchant_memory,
     extract_amounts,
@@ -24,36 +26,65 @@ from config import EXPENSE_CATEGORIES, INCOME_CATEGORIES, MERCHANT_CATEGORIES, T
 from finance_service import FinanceService, format_money, from_minor, net_spent_minor, shift_month, to_minor
 
 
-_QUESTION = re.compile(r"多少|几笔|预算|还能退|相比|对比|结余|比上个月|和上个月")
-_AMEND = re.compile(r"改成|改为|换成|商户是|商家是|商户改|商家改|分类改|金额改|日期改|币种改|描述改|这是收入|这是支出|这是退款")
-_BATCH = re.compile(r"把(?P<body>.+?)(?:都归到|都改成|全部改成|都算作|都归为)(?P<category>.+)$")
-_DATE_HINT = re.compile(
-    r"今天|昨天|昨日|前天|上周|上星期|上上周|本周|这周|周[一二三四五六日天]|\d{4}[-/.年]|\d{1,2}月\d{1,2}"
+_QUESTION = re.compile(
+    r"\bhow much\b|\bhow many\b|\bbudget\b|\brefund(?:ed)?\b|\bcompared?\b|\bcompare\b|\bbalance\b|"
+    r"\bhvor mye\b|\bhvor mange\b|\bbudsjett\b|\brefusjon\b|\bsammenlignet\b|\bsaldo\b",
+    re.IGNORECASE,
 )
-_BOOKING = re.compile(r"花了|花费|支付|消费|买|收到|工资|退款|退回|记一笔|spent|paid|brukte|betalte")
+_AMEND = re.compile(
+    r"\bchange\b|\bmerchant is\b|\bstore is\b|\bcategory\b|\bamount\b|\bdescription\b|"
+    r"\bthis is\b|\bendr(?:e|et)\b|\bbel[øo]p\b|\bbutikk\b",
+    re.IGNORECASE,
+)
+_BATCH = re.compile(
+    r"(?:move|change)\s+all\s+(?P<body>.+?)\s+to\s+(?P<category>[A-Za-z][A-Za-z ]+)$"
+    r"|(?:flytt|endre)\s+alle\s+(?P<body_no>.+?)\s+til\s+(?P<category_no>[A-Za-z][A-Za-z ]+)$",
+    re.IGNORECASE,
+)
+_DATE_HINT = re.compile(
+    rf"\b(?:today|yesterday|the day before yesterday|last week|this week|forrige uke|"
+    rf"i\s*dag|idag|i\s*går|igår|i\s*gar|igar|{_WEEKDAY_ALT})\b|\d{{4}}-\d{{2}}-\d{{2}}",
+    re.IGNORECASE,
+)
+_BOOKING = re.compile(
+    r"\b(?:spent|paid|bought|received|salary|cost|refund|brukte|betalte|kj[øo]pte|mottok|lønn|lonn)\b",
+    re.IGNORECASE,
+)
 _CURRENCIES = (
-    ("挪威克朗", "NOK"),
-    ("人民币", "CNY"),
-    ("克朗", "NOK"),
+    ("norske kroner", "NOK"),
     ("kroner", "NOK"),
-    ("美元", "USD"),
-    ("欧元", "EUR"),
-    ("英镑", "GBP"),
-    ("日元", "JPY"),
+    ("yuan", "CNY"),
+    ("dollars", "USD"),
+    ("dollar", "USD"),
+    ("euros", "EUR"),
+    ("euro", "EUR"),
+    ("pounds", "GBP"),
+    ("pound", "GBP"),
     ("NOK", "NOK"),
     ("CNY", "CNY"),
     ("USD", "USD"),
     ("EUR", "EUR"),
     ("GBP", "GBP"),
     ("JPY", "JPY"),
-    ("元", "CNY"),
-    ("块", "CNY"),
+    ("SEK", "SEK"),
+    ("DKK", "DKK"),
+    ("kr", "NOK"),
+)
+_MONTH_WORDS = (
+    "last month",
+    "previous month",
+    "this month",
+    "forrige måned",
+    "forrige maned",
+    "denne måneden",
+    "denne maneden",
+    "denne måned",
 )
 
 
 @dataclass
 class CategoryProposal:
-    """尚未执行的分类修改。transaction_ids 来自当前数据库查询。"""
+    """A category change that has not been applied. Ids come from the current query."""
 
     category_name: str
     transaction_ids: list[int]
@@ -63,7 +94,7 @@ class CategoryProposal:
 
 @dataclass
 class AgentResult:
-    """一轮对话的结果。new_drafts 和 amended_draft 都还不是账本记录。"""
+    """One turn. Drafts are not ledger rows yet."""
 
     reply: str
     intent: str
@@ -81,10 +112,10 @@ def handle_user_message(
     pending: TransactionDraft | None,
     memories: dict[str, str],
 ) -> AgentResult:
-    """判断这句话是在改草稿、提问、预览改分类，还是新的一笔账。"""
+    """Decide whether this turn edits a draft, asks a question, previews a recategorization, or starts a new entry."""
     cleaned = text.strip()
     if not cleaned:
-        return AgentResult("请说一笔交易，或问这个月花了多少。", "empty")
+        return AgentResult("Describe a transaction, or ask how much you spent this month.", "empty")
 
     batch = _BATCH.search(cleaned)
     if batch:
@@ -93,35 +124,35 @@ def handle_user_message(
     if pending is not None and (_AMEND.search(cleaned) or _looks_like_field_update(cleaned, today)):
         amended = amend_draft(pending, cleaned, today=today, default_currency=default_currency, memories=memories)
         if _same_draft(pending, amended):
-            pending_date = next((item for item in amended.warnings if "日期还没改" in item), None)
+            pending_date = next((item for item in amended.warnings if "date was not changed" in item), None)
             if pending_date:
                 return AgentResult(pending_date, "amend")
             return AgentResult(
-                "没有识别出要修改的字段。可以说「金额改成120元」「商户是 Kiwi」或「改成上周三」。",
+                'No field to change was recognized. Try "change the amount to 120 NOK", "merchant is Kiwi", or "change it to last Wednesday".',
                 "amend",
             )
-        return AgentResult(f"已修改当前草稿：{describe_draft(amended)}", "amend", amended_draft=amended)
+        return AgentResult(f"Updated the current draft: {describe_draft(amended)}", "amend", amended_draft=amended)
 
     if _QUESTION.search(cleaned) and not _BOOKING.search(cleaned):
         return AgentResult(answer_ledger_question(service, cleaned, today), "question")
-    if _QUESTION.search(cleaned) and "多少" in cleaned and not extract_amounts(cleaned):
+    if _QUESTION.search(cleaned) and re.search(r"\bhow much\b|\bhvor mye\b", cleaned, re.IGNORECASE) and not extract_amounts(cleaned):
         return AgentResult(answer_ledger_question(service, cleaned, today), "question")
 
-    if _BOOKING.search(cleaned) or extract_amounts(cleaned) or "记" in cleaned:
+    if _BOOKING.search(cleaned) or extract_amounts(cleaned):
         drafts = draft_transactions(cleaned, today=today, default_currency=default_currency, memories=memories)
         if len(drafts) == 1:
-            reply = f"已生成待确认草稿：{describe_draft(drafts[0])}"
+            reply = f"Draft ready to confirm: {describe_draft(drafts[0])}"
         else:
-            reply = f"已拆成 {len(drafts)} 笔待确认草稿。请先确认第一笔：{describe_draft(drafts[0])}"
+            reply = f"Split into {len(drafts)} drafts. Confirm the first one: {describe_draft(drafts[0])}"
         return AgentResult(reply, "draft", new_drafts=drafts)
 
     if pending is not None:
         return AgentResult(
-            "还没理解这句修改。可以说「金额改成120元」「商户是 Kiwi」或「改成上周三」。",
+            'I did not understand that change. Try "change the amount to 120 NOK", "merchant is Kiwi", or "change it to last Wednesday".',
             "unknown",
         )
     return AgentResult(
-        "我可以帮你记账、修改待确认草稿，或根据本机账本回答支出、预算和退款余额。例如：「午饭花了80元，地铁花了30元」。",
+        'I can record a transaction, edit a draft, or answer from the ledger on this computer. For example: "Lunch cost 80 NOK, then the metro cost 30 NOK."',
         "help",
     )
 
@@ -133,8 +164,12 @@ def draft_transactions(
     default_currency: str,
     memories: dict[str, str],
 ) -> list[TransactionDraft]:
-    """把一句话拆成多笔草稿。只有每一段都有金额时才拆开。"""
-    parts = [part.strip() for part in re.split(r"[，,；;。]|然后|还有|另外", text) if part.strip()]
+    """Split one sentence into drafts only when at least two parts have amounts."""
+    parts = [
+        part.strip()
+        for part in re.split(r"[,;]| then | and then | also | også | ogsa ", text, flags=re.IGNORECASE)
+        if part.strip()
+    ]
     if len(parts) >= 2:
         parsed = [
             _finish_draft(part, today=today, default_currency=default_currency, memories=memories)
@@ -153,42 +188,45 @@ def amend_draft(
     default_currency: str,
     memories: dict[str, str],
 ) -> TransactionDraft:
-    """按用户补充修改当前草稿。没提到的字段保持原值。"""
+    """Apply the fields the user mentioned. Unmentioned fields stay as they are."""
     updated = draft.model_copy(deep=True)
     category_explicit = False
     merchant_explicit = False
 
-    merchant_match = re.search(r"(?:商户|商家|店名)(?:是|为|改成|改为|换成)\s*([^\s，,。；;]{1,40})", text)
+    merchant_match = re.search(
+        r"\b(?:merchant|store|shop|butikk)\s+(?:is|to)\s+([A-Za-z0-9&.'’\- ]{1,40})",
+        text,
+        re.IGNORECASE,
+    )
     if merchant_match:
         updated.merchant = " ".join(merchant_match.group(1).split())
         merchant_explicit = True
 
     category_name = _category_in_text(text)
-    if category_name and re.search(r"分类|改成|改为|换成", text):
+    if category_name and re.search(r"\bcategory\b|\bchange\b|\bto\b|\btil\b", text, re.IGNORECASE):
         updated.category = category_name
         category_explicit = True
         if category_name in INCOME_CATEGORIES and category_name not in EXPENSE_CATEGORIES:
-            updated.transaction_type = "refund" if category_name == "退款" else "income"
+            updated.transaction_type = "refund" if category_name == "Refund" else "income"
             updated.type_confident = True
 
-    type_match = re.search(r"(?:这是|改成|改为|换成)(收入|支出|退款)", text)
+    type_match = re.search(r"\bthis is (?:an |a )?(income|expense|refund)\b", text, re.IGNORECASE)
     if type_match:
-        mapping = {"收入": "income", "支出": "expense", "退款": "refund"}
-        updated.transaction_type = mapping[type_match.group(1)]
+        updated.transaction_type = type_match.group(1).lower()
         updated.type_confident = True
         if updated.transaction_type == "refund":
-            updated.category = "退款"
+            updated.category = "Refund"
             category_explicit = True
         elif updated.transaction_type == "income" and updated.category not in INCOME_CATEGORIES:
-            updated.category = "其他收入"
+            updated.category = "Other income"
         elif updated.transaction_type == "expense" and updated.category not in EXPENSE_CATEGORIES:
-            updated.category = "其他"
+            updated.category = "Other"
 
-    description_match = re.search(r"描述(?:改成|改为|换成|是)\s*(.+)$", text)
+    description_match = re.search(r"\bdescription\s+(?:to|is)\s+(.+)$", text, re.IGNORECASE)
     if description_match:
         updated.description = description_match.group(1).strip()[:500]
 
-    if re.search(r"金额|改成|改为|换成", text) or _amount_only(text):
+    if re.search(r"\bamount\b|\bchange\b|\bbel[øo]p\b", text, re.IGNORECASE) or _amount_only(text):
         hits = extract_amounts(text)
         if len(hits) == 1:
             updated.amount = hits[0].amount
@@ -212,11 +250,11 @@ def amend_draft(
             updated.transaction_date = resolved
             updated.date_assumed = False
             updated.date_explicit = True
-        elif "上周" in text or "上星期" in text:
-            updated.warnings.append("上周需要具体到某一天，日期还没改。")
+        elif re.search(r"\blast week\b|\bforrige uke\b", text, re.IGNORECASE):
+            updated.warnings.append("Last week needs a specific day. The date was not changed.")
 
     currency_code = _currency_in_text(text)
-    if currency_code and re.search(r"币种|货币|改成|改为|换成", text):
+    if currency_code and re.search(r"\bcurrency\b|\bchange\b|\bto\b|\bvaluta\b", text, re.IGNORECASE):
         updated.currency = currency_code
         updated.currency_assumed = False
 
@@ -237,43 +275,50 @@ def amend_draft(
 
 
 def answer_ledger_question(service: FinanceService, text: str, today: date) -> str:
-    """用数据库里的数字回答。找不到记录时直接说明，不估算。"""
+    """Answer with numbers from the database. Say when nothing was found."""
     year, month = mentioned_month(text, today)
     currency = _currency_in_text(text)
-    if "预算" in text:
+    folded = text.casefold()
+    if "budget" in folded or "budsjett" in folded:
         return _answer_budget(service, text, year, month)
-    if "还能退" in text or ("退" in text and "多少" in text):
+    if re.search(r"\brefund\b|\brefusjon\b", folded) and re.search(r"\bhow much\b|\bhvor mye\b|\bstill\b", folded):
         return _answer_refund_remaining(service, text, currency)
-    if re.search(r"相比|对比|比上个月|和上个月", text):
-        return _answer_comparison(service, text, year, month, currency)
+    if re.search(r"\bcompare|\bcompared\b|\bsammenlignet\b|\blast month\b|\bforrige måned\b|\bforrige maned\b", folded):
+        if re.search(r"\bcompare|\bcompared\b|\bsammenlignet\b", folded):
+            return _answer_comparison(service, text, year, month, currency)
     return _answer_summary(service, text, year, month, currency)
 
 
 def describe_draft(draft: TransactionDraft) -> str:
-    """把草稿说成一句可以核对的中文。"""
-    when = draft.transaction_date.isoformat() if draft.transaction_date else "日期待补充"
+    """One sentence the user can check before saving."""
+    when = draft.transaction_date.isoformat() if draft.transaction_date else "date missing"
     if draft.amount is not None and draft.currency:
         money = format_money(to_minor(draft.amount, draft.currency), draft.currency)
     else:
-        money = "金额待补充"
-    label = TRANSACTION_TYPE_LABELS.get(draft.transaction_type or "", "支出")
-    category = draft.category or "未分类"
-    merchant = f"，商户 {draft.merchant}" if draft.merchant else ""
-    question = f"。{draft.clarification_question}" if draft.clarification_question else ""
+        money = "amount missing"
+    label = TRANSACTION_TYPE_LABELS.get(draft.transaction_type or "", "Expense")
+    category = draft.category or "Uncategorized"
+    merchant = f", merchant {draft.merchant}" if draft.merchant else ""
+    question = f". {draft.clarification_question}" if draft.clarification_question else ""
     return f"{when} {label} {money} {category}{merchant}{question}"
 
 
 def mentioned_month(text: str, today: date) -> tuple[int, int]:
-    """从问题里确定统计月份。没写月份时用今天所在的月。"""
-    if "上个月" in text or "上月" in text:
+    """The month a question refers to. Defaults to the month of today."""
+    folded = text.casefold()
+    if "last month" in folded or "previous month" in folded or "forrige måned" in folded or "forrige maned" in folded:
         return shift_month(today.year, today.month, -1)
-    if "这个月" not in text and "本月" not in text:
-        match = re.search(r"(?<!\d)(\d{1,2})月", text)
-        if match:
-            month = int(match.group(1))
-            if 1 <= month <= 12:
-                year = today.year if month <= today.month else today.year - 1
-                return year, month
+    if "this month" not in folded and "denne måned" not in folded and "denne maned" not in folded:
+        for name, number in (
+            ("january", 1), ("januar", 1), ("february", 2), ("februar", 2),
+            ("march", 3), ("mars", 3), ("april", 4), ("may", 5), ("mai", 5),
+            ("june", 6), ("juni", 6), ("july", 7), ("juli", 7), ("august", 8),
+            ("september", 9), ("october", 10), ("oktober", 10), ("november", 11),
+            ("december", 12), ("desember", 12),
+        ):
+            if re.search(rf"\b{name}\b", folded):
+                year = today.year if number <= today.month else today.year - 1
+                return year, number
     return today.year, today.month
 
 
@@ -289,17 +334,26 @@ def _finish_draft(
     return apply_merchant_memory(draft, memories)
 
 
+def _batch_groups(match: re.Match[str]) -> tuple[str, str]:
+    if match.group("body") is not None:
+        return match.group("body"), match.group("category")
+    return match.group("body_no"), match.group("category_no")
+
+
 def _propose_recategory(text: str, match: re.Match[str], today: date, service: FinanceService) -> AgentResult:
-    category_name = _category_in_text(match.group("category"))
+    body, category_text = _batch_groups(match)
+    category_name = _category_in_text(category_text)
     if category_name not in EXPENSE_CATEGORIES:
-        return AgentResult("请使用已有的支出分类，例如交通、餐饮或食品杂货。这次没有修改任何记录。", "batch")
-    body = match.group("body")
-    if not re.search(r"上个月|上月|这个月|本月|(?<!\d)\d{1,2}月", body):
-        return AgentResult("请说明要改哪一个月，例如「把上个月打车都归到交通」。这次没有修改任何记录。", "batch")
+        return AgentResult("Use an existing expense category, such as Transport, Dining, or Groceries. Nothing was changed.", "batch")
+    if not re.search(r"last month|previous month|this month|forrige måned|forrige maned|denne måned|denne maned", body, re.IGNORECASE):
+        return AgentResult('Say which month to change, for example "move all last month taxi to Transport". Nothing was changed.', "batch")
     year, month = mentioned_month(body, today)
-    keyword = re.sub(r"上个月|上月|这个月|本月|\d{1,2}月", "", body).strip(" 的")
+    keyword = body
+    for phrase in _MONTH_WORDS:
+        keyword = re.sub(re.escape(phrase), " ", keyword, flags=re.IGNORECASE)
+    keyword = " ".join(keyword.replace("'s", " ").split())
     if not keyword:
-        return AgentResult("请加上商户或关键词，例如打车或 Uber。这次没有修改任何记录。", "batch")
+        return AgentResult("Add a merchant or keyword, such as taxi or Uber. Nothing was changed.", "batch")
     start, end = _month_bounds_dates(year, month)
     rows = service.list_transaction_rows(
         start_date=start,
@@ -310,17 +364,17 @@ def _propose_recategory(text: str, match: re.Match[str], today: date, service: F
     selected = [row for row in rows if row.get("category_name") != category_name]
     if not selected:
         return AgentResult(
-            f"{year}年{month}月没有找到仍需改成{category_name}的「{keyword}」支出。",
+            f"No {keyword} expenses in {year}-{month:02d} still need to be changed to {category_name}.",
             "batch",
         )
     preview = [
         {
-            "编号": row["id"],
-            "日期": row["transaction_date"],
-            "金额": row["amount"],
-            "币种": row["currency"],
-            "商户": row.get("merchant") or "",
-            "原分类": row.get("category_name") or "",
+            "id": row["id"],
+            "date": row["transaction_date"],
+            "amount": row["amount"],
+            "currency": row["currency"],
+            "merchant": row.get("merchant") or "",
+            "previous category": row.get("category_name") or "",
         }
         for row in selected[:20]
     ]
@@ -329,8 +383,8 @@ def _propose_recategory(text: str, match: re.Match[str], today: date, service: F
         transaction_ids=[int(row["id"]) for row in selected],
         preview=preview,
         summary=(
-            f"准备把 {year}年{month}月 {len(selected)} 笔「{keyword}」支出改成{category_name}。"
-            "确认前不会写入数据库。"
+            f"Ready to change {len(selected)} \"{keyword}\" expenses from {year}-{month:02d} to {category_name}. "
+            "Nothing is saved until you confirm."
         ),
     )
     return AgentResult(proposal.summary, "batch", proposal=proposal)
@@ -341,20 +395,18 @@ def _answer_budget(service: FinanceService, text: str, year: int, month: int) ->
     category_name = _category_in_text(text)
     if category_name:
         statuses = [item for item in statuses if item.category_name == category_name]
-    elif "总" not in text:
-        pass
     if not statuses:
-        return f"{year}年{month}月还没有对应的预算。"
-    lines = [f"{year}年{month}月预算："]
+        return f"No matching budget for {year}-{month:02d}."
+    lines = [f"Budget for {year}-{month:02d}:"]
     for status in statuses:
-        name = status.category_name or "总支出"
+        name = status.category_name or "Total spending"
         spent = format_money(status.spent_minor, status.currency)
         limit = format_money(status.limit_minor, status.currency)
         if status.limit_minor <= 0:
-            lines.append(f"{name}（{status.currency}）已支出 {spent}，预算为 {limit}。")
+            lines.append(f"{name} ({status.currency}): spent {spent}, budget {limit}.")
             continue
         percent = (status.ratio * Decimal("100")).quantize(Decimal("0.1"))
-        lines.append(f"{name}（{status.currency}）已用 {percent}%，支出 {spent} / 预算 {limit}。")
+        lines.append(f"{name} ({status.currency}): {percent}% used, spent {spent} / budget {limit}.")
     return "\n".join(lines)
 
 
@@ -377,14 +429,14 @@ def _answer_refund_remaining(service: FinanceService, text: str, currency: str |
             continue
         label = row.get("merchant") or row.get("description") or f"#{row['id']}"
         lines.append(
-            f"#{row['id']} {row['transaction_date']} {label} 还可退 "
-            f"{format_money(remaining, row['currency'])}。"
+            f"#{row['id']} {row['transaction_date']} {label} can still be refunded "
+            f"{format_money(remaining, row['currency'])}."
         )
         if len(lines) >= 8:
             break
     if not lines:
-        target = f"「{keyword}」" if keyword else "当前"
-        return f"没有找到{target}仍可退款的支出。"
+        target = f" for \"{keyword}\"" if keyword else ""
+        return f"No expense{target} can still be refunded."
     return "\n".join(lines)
 
 
@@ -409,17 +461,17 @@ def _answer_comparison(
     )
     currencies = _currencies_in(current_rows + previous_rows, currency)
     if not currencies:
-        return f"{year}年{month}月和{previous_year}年{previous_month}月都没有可比较的交易。"
-    subject = category_name or "净支出"
+        return f"There is nothing to compare between {year}-{month:02d} and {previous_year}-{previous_month:02d}."
+    subject = category_name or "net expense"
     lines = []
     for code in currencies:
         current_minor = net_spent_minor(current_rows, code, category_name)
         previous_minor = net_spent_minor(previous_rows, code, category_name)
         delta = from_minor(current_minor, code) - from_minor(previous_minor, code)
         lines.append(
-            f"{year}年{month}月{subject} {format_money(current_minor, code)}，"
-            f"{previous_year}年{previous_month}月为 {format_money(previous_minor, code)}，"
-            f"相差 {delta} {code}。"
+            f"{year}-{month:02d} {subject} {format_money(current_minor, code)}, "
+            f"{previous_year}-{previous_month:02d} was {format_money(previous_minor, code)}, "
+            f"difference {delta} {code}."
         )
     return "\n".join(lines)
 
@@ -427,22 +479,22 @@ def _answer_comparison(
 def _answer_summary(service: FinanceService, text: str, year: int, month: int, currency: str | None) -> str:
     start, end = _month_bounds_dates(year, month)
     rows = service.list_transaction_rows(start_date=start, end_date=end, currency=currency)
-    if "几笔" in text:
-        return f"{year}年{month}月共有 {len(rows)} 笔交易。"
+    if re.search(r"\bhow many\b|\bhvor mange\b", text, re.IGNORECASE):
+        return f"{year}-{month:02d} has {len(rows)} transactions."
     category_name = _category_in_text(text)
     currencies = _currencies_in(rows, currency)
     if category_name:
         if not currencies:
-            return f"{year}年{month}月没有{category_name}支出。"
+            return f"No {category_name} expenses in {year}-{month:02d}."
         lines = []
         for code in currencies:
             spent = net_spent_minor(rows, code, category_name)
             if spent == 0 and not any(row["currency"] == code and row.get("category_name") == category_name for row in rows):
                 continue
-            lines.append(f"{year}年{month}月{category_name}净支出 {format_money(spent, code)}。")
-        return "\n".join(lines) if lines else f"{year}年{month}月没有{category_name}支出。"
+            lines.append(f"{year}-{month:02d} {category_name} net expense {format_money(spent, code)}.")
+        return "\n".join(lines) if lines else f"No {category_name} expenses in {year}-{month:02d}."
     if not currencies:
-        return f"{year}年{month}月还没有交易。"
+        return f"No transactions in {year}-{month:02d}."
     lines = []
     for code in currencies:
         income = _sum_type(rows, code, "income")
@@ -451,9 +503,9 @@ def _answer_summary(service: FinanceService, text: str, year: int, month: int, c
         net = expense - refund
         balance = income - net
         lines.append(
-            f"{year}年{month}月（{code}）总收入 {format_money(income, code)}，"
-            f"总支出 {format_money(expense, code)}，退款 {format_money(refund, code)}，"
-            f"净支出 {format_money(net, code)}，结余 {format_money(balance, code)}。"
+            f"{year}-{month:02d} ({code}): income {format_money(income, code)}, "
+            f"expenses {format_money(expense, code)}, refunds {format_money(refund, code)}, "
+            f"net expense {format_money(net, code)}, balance {format_money(balance, code)}."
         )
     return "\n".join(lines)
 
@@ -484,8 +536,9 @@ def _month_bounds_dates(year: int, month: int) -> tuple[date, date]:
 
 
 def _category_in_text(text: str) -> str | None:
+    folded = text.casefold()
     for name in sorted(EXPENSE_CATEGORIES + INCOME_CATEGORIES, key=len, reverse=True):
-        if name in text:
+        if re.search(rf"\b{re.escape(name.casefold())}\b", folded):
             return name
     return None
 
@@ -493,21 +546,24 @@ def _category_in_text(text: str) -> str | None:
 def _currency_in_text(text: str) -> str | None:
     folded = text.casefold()
     for token, code in _CURRENCIES:
-        if token.casefold() in folded:
+        if re.search(rf"\b{re.escape(token.casefold())}\b", folded):
             return code
     return None
 
 
 def _question_keyword(text: str) -> str:
-    cleaned = re.sub(
-        r"这个月|上个月|本月|上月|多少|还能|可以|退款|退回|退钱|钱|呢|吗|花了|什么|查询|一下|的|了|还|退",
-        " ",
-        text,
-    )
+    cleaned = text
+    for phrase in (
+        "this month", "last month", "previous month", "how much", "how many",
+        "can still be refunded", "still be refunded", "refunded", "refund",
+        "of", "the", "a", "an", "did", "does", "cost", "spent", "what",
+        "hvor mye", "hvor mange", "kan", "fortsatt", "refusjon",
+    ):
+        cleaned = re.sub(rf"\b{re.escape(phrase)}\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\d+(?:\.\d+)?", " ", cleaned)
     for token, _code in _CURRENCIES:
-        cleaned = re.sub(re.escape(token), " ", cleaned, flags=re.IGNORECASE)
-    return " ".join(cleaned.replace("？", " ").replace("?", " ").split())
+        cleaned = re.sub(rf"\b{re.escape(token)}\b", " ", cleaned, flags=re.IGNORECASE)
+    return " ".join(cleaned.replace("?", " ").split())
 
 
 def _looks_like_field_update(text: str, today: date) -> bool:
@@ -516,28 +572,29 @@ def _looks_like_field_update(text: str, today: date) -> bool:
     if extract_amounts(text) or _BOOKING.search(text) or _QUESTION.search(text):
         return False
     _resolved, _assumed, explicit, _start, _end = resolve_date(text, today)
-    return explicit and len(text) <= 16
+    return explicit and len(text) <= 24
 
 
 def _amount_only(text: str) -> bool:
     if not extract_amounts(text):
         return False
-    stripped = re.sub(r"\d+(?:\.\d{1,2})?", "", text)
+    stripped = re.sub(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?", "", text)
     for token, _code in _CURRENCIES:
-        stripped = re.sub(re.escape(token), "", stripped, flags=re.IGNORECASE)
-    stripped = re.sub(r"[金额改为成换成是\s，,。元块]", "", stripped)
+        stripped = re.sub(rf"\b{re.escape(token)}\b", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\b(?:amount|change|to|the|is|set|beløp|belop)\b", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"[\s,.$€£]", "", stripped)
     return stripped == ""
 
 
 def _drop_stale_warnings(draft: TransactionDraft) -> None:
-    """字段已经补上之后，去掉原先提示缺失的警告。"""
+    """Remove warnings for fields that have now been filled in."""
     stale: list[str] = []
     if draft.transaction_date is not None and not draft.date_assumed:
-        stale.extend(["没有识别到日期", "暂按今天"])
+        stale.extend(["No date found", "Using today"])
     if draft.amount is not None:
-        stale.extend(["没有识别到金额", "多个金额"])
+        stale.extend(["No amount found", "Several amounts"])
     if draft.type_confident:
-        stale.append("没有判断出收入还是支出")
+        stale.append("Could not tell income from expense")
     if stale:
         draft.warnings = [item for item in draft.warnings if not any(token in item for token in stale)]
 

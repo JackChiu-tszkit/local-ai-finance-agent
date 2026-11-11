@@ -1,7 +1,8 @@
-"""SQLite 访问层。
+"""SQLite access.
 
-这里只负责参数化读写和事务边界，不调用语言模型，也不计算预算结论。
-所有写入函数都接收外部传入的连接，由调用方统一提交或回滚。
+This layer only does parameterized reads and writes and transaction boundaries.
+It does not call a language model or decide budget status.
+Write functions receive an open connection. The caller commits or rolls back.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from db_setup import initialize, utc_now
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    """打开连接并强制启用外键。SQLite 的外键开关是按连接生效的。"""
+    """Open a connection and force foreign keys on. SQLite applies that switch per connection."""
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -24,7 +25,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 @contextmanager
 def get_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
-    """提供一个会自动提交或回滚的连接。"""
+    """Yield a connection that commits on success and rolls back on error."""
     connection = connect(db_path)
     try:
         yield connection
@@ -37,7 +38,7 @@ def get_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def init_database(db_path: Path) -> None:
-    """确保数据库文件、表和预设分类存在。重复调用是安全的。"""
+    """Make sure the database file, tables, and built-in categories exist. Calling this again is safe."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with get_connection(db_path) as connection:
         initialize(connection)
@@ -51,10 +52,10 @@ def insert_audit(
     action: str,
     changed_fields: list[str],
 ) -> None:
-    """记录发生过的操作和字段名。
+    """Record the action and the field names.
 
-    审计表不保存金额、商户和描述，避免在日志型数据里复制一份敏感内容。
-    交易原值仍保留在 transactions 表中，软删除后也可以追溯。
+    The audit table does not store amounts, merchants, or descriptions.
+    The original values stay on the transactions row and can still be traced after a soft delete.
     """
     fields = ",".join(sorted(set(changed_fields)))
     connection.execute(
@@ -67,7 +68,7 @@ def insert_audit(
 
 
 def list_categories(connection: sqlite3.Connection, category_type: str | None = None) -> list[dict]:
-    """按类型读取分类。类型为空时返回全部。"""
+    """Read categories of one type. An empty type returns all of them."""
     if category_type is None:
         rows = connection.execute(
             "SELECT id, name, category_type, created_at FROM categories ORDER BY id"
@@ -90,7 +91,7 @@ def get_category_by_name(
     name: str,
     category_type: str,
 ) -> dict | None:
-    """按名称和收支类型精确查找分类。"""
+    """Find one category by name and type."""
     row = connection.execute(
         """
         SELECT id, name, category_type, created_at
@@ -107,7 +108,7 @@ def get_or_create_account(
     name: str,
     currency: str | None,
 ) -> int:
-    """按账户名获取或创建账户。名称会先去掉首尾空白。"""
+    """Get or create an account by name. Surrounding whitespace is removed first."""
     cleaned = name.strip()
     existing = connection.execute(
         "SELECT id FROM accounts WHERE name = ?",
@@ -116,14 +117,14 @@ def get_or_create_account(
     if existing:
         return int(existing["id"])
     timestamp = utc_now()
-    cursor = connection.execute(
+    result = connection.execute(
         """
         INSERT INTO accounts (name, currency, is_deleted, created_at, updated_at)
         VALUES (?, ?, 0, ?, ?)
         """,
         (cleaned, currency, timestamp, timestamp),
     )
-    account_id = int(cursor.lastrowid)
+    account_id = int(result.lastrowid)
     insert_audit(
         connection,
         entity_type="account",
@@ -135,9 +136,9 @@ def get_or_create_account(
 
 
 def insert_transaction(connection: sqlite3.Connection, record: dict) -> int:
-    """插入一条交易。record 中的金额必须已经是整数最小单位。"""
+    """Insert one transaction. amount_minor in the record must already be an integer minor unit."""
     timestamp = utc_now()
-    cursor = connection.execute(
+    result = connection.execute(
         """
         INSERT INTO transactions (
             transaction_date, amount_minor, currency, transaction_type, category_id,
@@ -160,7 +161,7 @@ def insert_transaction(connection: sqlite3.Connection, record: dict) -> int:
             timestamp,
         ),
     )
-    transaction_id = int(cursor.lastrowid)
+    transaction_id = int(result.lastrowid)
     insert_audit(
         connection,
         entity_type="transaction",
@@ -183,7 +184,7 @@ def insert_transaction(connection: sqlite3.Connection, record: dict) -> int:
 
 
 def update_transaction(connection: sqlite3.Connection, transaction_id: int, fields: dict) -> None:
-    """更新允许修改的业务字段，并只把字段名写入审计表。"""
+    """Update the editable fields and write only the field names to the audit log."""
     allowed = [
         "transaction_date",
         "amount_minor",
@@ -201,7 +202,7 @@ def update_transaction(connection: sqlite3.Connection, transaction_id: int, fiel
         (transaction_id,),
     ).fetchone()
     if current is None:
-        raise KeyError(f"交易不存在或已删除：{transaction_id}")
+        raise KeyError(f"The transaction does not exist or is already deleted: {transaction_id}")
     assignments: list[str] = []
     params: list[object] = []
     changed: list[str] = []
@@ -232,9 +233,9 @@ def update_transaction(connection: sqlite3.Connection, transaction_id: int, fiel
 
 
 def soft_delete_transaction(connection: sqlite3.Connection, transaction_id: int) -> None:
-    """软删除交易。历史行保留，报表默认不再统计。"""
+    """Soft-delete a transaction. The row stays, and reports skip it by default."""
     timestamp = utc_now()
-    cursor = connection.execute(
+    result = connection.execute(
         """
         UPDATE transactions
         SET is_deleted = 1, deleted_at = ?, updated_at = ?
@@ -242,8 +243,8 @@ def soft_delete_transaction(connection: sqlite3.Connection, transaction_id: int)
         """,
         (timestamp, timestamp, transaction_id),
     )
-    if cursor.rowcount != 1:
-        raise KeyError(f"交易不存在或已删除：{transaction_id}")
+    if result.rowcount != 1:
+        raise KeyError(f"The transaction does not exist or is already deleted: {transaction_id}")
     insert_audit(
         connection,
         entity_type="transaction",
@@ -254,9 +255,9 @@ def soft_delete_transaction(connection: sqlite3.Connection, transaction_id: int)
 
 
 def restore_transaction(connection: sqlite3.Connection, transaction_id: int) -> None:
-    """恢复软删除的交易。"""
+    """Restore a soft-deleted transaction."""
     timestamp = utc_now()
-    cursor = connection.execute(
+    result = connection.execute(
         """
         UPDATE transactions
         SET is_deleted = 0, deleted_at = NULL, updated_at = ?
@@ -264,8 +265,8 @@ def restore_transaction(connection: sqlite3.Connection, transaction_id: int) -> 
         """,
         (timestamp, transaction_id),
     )
-    if cursor.rowcount != 1:
-        raise KeyError(f"交易不存在或并未删除：{transaction_id}")
+    if result.rowcount != 1:
+        raise KeyError(f"The transaction does not exist or is not deleted: {transaction_id}")
     insert_audit(
         connection,
         entity_type="transaction",
@@ -309,7 +310,7 @@ LEFT JOIN categories AS oc ON oc.id = ot.category_id
 
 
 def get_transaction(connection: sqlite3.Connection, transaction_id: int) -> dict | None:
-    """读取单条交易，包含已软删除的记录。"""
+    """Read one transaction, including a soft-deleted row."""
     row = connection.execute(
         _TRANSACTION_SELECT + " WHERE t.id = ?",
         (transaction_id,),
@@ -318,7 +319,7 @@ def get_transaction(connection: sqlite3.Connection, transaction_id: int) -> dict
 
 
 def escape_like(value: str) -> str:
-    """转义 LIKE 通配符，使用户输入的百分号按字面意思搜索。"""
+    """Escape LIKE wildcards so a percent sign in the query is searched literally."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -333,7 +334,7 @@ def list_transactions(
     keyword: str | None = None,
     include_deleted: bool = False,
 ) -> list[dict]:
-    """按条件筛选交易。所有用户输入都通过参数绑定传入。"""
+    """Filter transactions. Every user value is passed as a bound parameter."""
     clauses = ["1 = 1"]
     params: list[object] = []
     if not include_deleted:
@@ -379,7 +380,7 @@ def sum_refunds_for(
     *,
     exclude_id: int | None = None,
 ) -> int:
-    """汇总某笔支出尚未删除的退款金额，单位是最小货币单位。"""
+    """Sum the undeleted refunds for one expense, in minor units."""
     if exclude_id is None:
         row = connection.execute(
             """
@@ -407,7 +408,7 @@ def sum_refunds_for(
 
 
 def list_budgets(connection: sqlite3.Connection) -> list[dict]:
-    """读取全部预算，并带上分类名称。总预算的分类名为空。"""
+    """Read every budget with its category name. An overall budget has no category name."""
     rows = connection.execute(
         """
         SELECT
@@ -432,7 +433,7 @@ def get_budget(
     category_id: int | None,
     currency: str,
 ) -> dict | None:
-    """按币种和分类查找预算。分类为空表示该币种的月度总支出预算。"""
+    """Find a budget by currency and category. An empty category is the monthly total for that currency."""
     if category_id is None:
         row = connection.execute(
             """
@@ -461,7 +462,7 @@ def upsert_budget(
     currency: str,
     monthly_limit_minor: int,
 ) -> int:
-    """创建或更新预算。唯一性由部分索引保证。"""
+    """Create or update a budget. Uniqueness comes from a partial index."""
     existing = get_budget(connection, category_id=category_id, currency=currency)
     timestamp = utc_now()
     if existing:
@@ -481,14 +482,14 @@ def upsert_budget(
             changed_fields=["monthly_limit_minor"],
         )
         return int(existing["id"])
-    cursor = connection.execute(
+    result = connection.execute(
         """
         INSERT INTO budgets (category_id, currency, monthly_limit_minor, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
         """,
         (category_id, currency, monthly_limit_minor, timestamp, timestamp),
     )
-    budget_id = int(cursor.lastrowid)
+    budget_id = int(result.lastrowid)
     insert_audit(
         connection,
         entity_type="budget",
@@ -500,10 +501,10 @@ def upsert_budget(
 
 
 def delete_budget(connection: sqlite3.Connection, budget_id: int) -> None:
-    """删除一条预算设置。"""
-    cursor = connection.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
-    if cursor.rowcount != 1:
-        raise KeyError(f"预算不存在：{budget_id}")
+    """Delete one budget."""
+    result = connection.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
+    if result.rowcount != 1:
+        raise KeyError(f"Budget not found: {budget_id}")
     insert_audit(
         connection,
         entity_type="budget",
@@ -519,7 +520,7 @@ def upsert_merchant_memory(
     merchant_key: str,
     category_name: str,
 ) -> int:
-    """记住用户确认过的商户分类。审计只记录字段名，不记录商户原文。"""
+    """Remember a merchant category the user confirmed. The audit log stores the field name, not the merchant text."""
     timestamp = utc_now()
     existing = connection.execute(
         "SELECT id FROM merchant_memories WHERE merchant_key = ?",
@@ -537,14 +538,14 @@ def upsert_merchant_memory(
         memory_id = int(existing["id"])
         action = "update"
     else:
-        cursor = connection.execute(
+        result = connection.execute(
             """
             INSERT INTO merchant_memories (merchant_key, category_name, created_at, updated_at)
             VALUES (?, ?, ?, ?)
             """,
             (merchant_key, category_name, timestamp, timestamp),
         )
-        memory_id = int(cursor.lastrowid)
+        memory_id = int(result.lastrowid)
         action = "create"
     insert_audit(
         connection,
@@ -557,7 +558,7 @@ def upsert_merchant_memory(
 
 
 def list_merchant_memories(connection: sqlite3.Connection) -> list[dict]:
-    """读取全部商户分类记忆。"""
+    """Read every remembered merchant category."""
     rows = connection.execute(
         """
         SELECT id, merchant_key, category_name, created_at, updated_at
@@ -569,7 +570,7 @@ def list_merchant_memories(connection: sqlite3.Connection) -> list[dict]:
 
 
 def list_audit_logs(connection: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """读取最近的审计记录。"""
+    """Read the most recent audit rows."""
     rows = connection.execute(
         """
         SELECT id, entity_type, entity_id, action, changed_fields, created_at
