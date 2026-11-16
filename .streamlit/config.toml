@@ -7,7 +7,16 @@ fileWatcherType = "auto"
 
 [theme]
 base = "light"
-primaryColor = "#0F6E56"
-backgroundColor = "#F7F6F2"
-secondaryBackgroundColor = "#E7F0EC"
-textColor = "#1F2933"
+primaryColor = "#1f6b3a"
+backgroundColor = "#f8f8f8"
+secondaryBackgroundColor = "#eeeeee"
+textColor = "#0a0a0a"
+font = "sans serif"
+baseRadius = "none"
+buttonRadius = "none"
+
+[theme.sidebar]
+backgroundColor = "#0a0a0a"
+secondaryBackgroundColor = "#171717"
+textColor = "#f8f8f8"
+primaryColor = "#1f6b3a"

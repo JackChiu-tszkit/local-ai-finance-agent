@@ -6,6 +6,7 @@ A rerun does not insert the same row again: the confirmation token is remembered
 
 from __future__ import annotations
 
+import base64
 import tempfile
 import uuid
 from datetime import date
@@ -36,6 +37,7 @@ from config import (
 from finance_service import (
     DuplicateTransactionError,
     FinanceService,
+    format_amount,
     format_money,
     from_minor,
 )
@@ -48,6 +50,51 @@ from zoneinfo import ZoneInfo
 TYPE_OPTIONS = [("expense", "Expense"), ("income", "Income"), ("refund", "Refund")]
 CURRENCIES = ["NOK", "CNY", "USD", "EUR", "GBP", "SEK", "DKK", "JPY"]
 FREQUENCIES = [("day", "By day"), ("week", "By week"), ("month", "By month")]
+CHART_INK = "#0a0a0a"
+CHART_ACCENT = "#1f6b3a"
+CHART_MUTED = "#6a6a6a"
+CHART_SERIES = ["#1f6b3a", "#0a0a0a", "#6a6a6a", "#8fb89a", "#2f2f2f", "#b7b7b7"]
+ROOT = Path(__file__).resolve().parent
+
+
+def _font_face(family: str, filename: str) -> str:
+    encoded = base64.b64encode((ROOT / "assets" / "fonts" / filename).read_bytes()).decode("ascii")
+    return (
+        "@font-face {"
+        f'font-family: "{family}";'
+        "font-style: normal;"
+        "font-weight: 400 500;"
+        "font-display: swap;"
+        f'src: url("data:font/woff2;base64,{encoded}") format("woff2");'
+        "}"
+    )
+
+
+def theme_markup() -> str:
+    """Load the local Epilogue and JetBrains Mono files. The page does not call a font host."""
+    css = (ROOT / "assets" / "theme.css").read_text(encoding="utf-8")
+    faces = _font_face("Epilogue", "epilogue-latin.woff2") + _font_face(
+        "JetBrains Mono", "jetbrains-mono-latin.woff2"
+    )
+    return f"<style>{faces}{css}</style>"
+
+
+def apply_theme() -> None:
+    st.markdown(theme_markup(), unsafe_allow_html=True)
+
+
+def polish_chart(figure):
+    figure.update_layout(
+        font=dict(family="Epilogue, sans-serif", color=CHART_INK, size=13),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        colorway=CHART_SERIES,
+        margin=dict(l=8, r=8, t=52, b=8),
+        legend=dict(orientation="h", yanchor="top", y=-0.18),
+    )
+    figure.update_xaxes(showgrid=False, color=CHART_MUTED)
+    figure.update_yaxes(gridcolor="#e4e4e4", color=CHART_MUTED)
+    return figure
 
 
 def get_service() -> FinanceService:
@@ -189,7 +236,7 @@ def render_editor(
     category_value = initial.get("category")
     if category_value not in categories:
         category_value = categories[0]
-        category = st.selectbox(
+    category = st.selectbox(
         "Category",
         categories,
         index=categories.index(category_value),
@@ -401,7 +448,7 @@ def page_add(service: FinanceService) -> None:
             placeholder="For example: Spent 350 NOK at Kiwi today. Or: I dag brukte jeg 350 kr på Kiwi.",
             height=120,
         )
-        if st.button("Parse text", type="primary"):
+        if st.button("Parse this sentence", type="primary"):
             if not text.strip():
                 st.warning("Enter a transaction.")
             else:
@@ -454,7 +501,7 @@ def page_add(service: FinanceService) -> None:
         with action_col:
             transcribe_clicked = st.button("Transcribe and parse", type="primary")
         with reparse_col:
-            reparse_clicked = st.button("Parse the text above")
+            reparse_clicked = st.button("Parse this transcript")
         chosen = recorded or audio_file
         if transcribe_clicked:
             if chosen is None:
@@ -515,7 +562,7 @@ def page_add(service: FinanceService) -> None:
 
 
 def render_budget_alerts(service: FinanceService, today: date) -> None:
-    """Show this month's budget warnings at the top of Overview. Both 80% and over-budget use a red message."""
+    """Show this month's budget warnings at the top of Overview."""
     for status in service.budget_status(year=today.year, month=today.month):
         if status.level == "ok":
             continue
@@ -526,7 +573,7 @@ def render_budget_alerts(service: FinanceService, today: date) -> None:
             st.error(f"Over budget: {name} ({status.currency}) spent {spent}, budget {limit}.")
         else:
             percent = (status.ratio * Decimal(100)).quantize(Decimal("0.1"))
-            st.error(f"Budget warning: {name} ({status.currency}) used {percent}%, spent {spent} / budget {limit}.")
+            st.warning(f"Budget warning: {name} ({status.currency}) used {percent}%, spent {spent} / budget {limit}.")
 
 
 def render_charts(summary) -> None:
@@ -539,8 +586,8 @@ def render_charts(summary) -> None:
             labels.append(name)
             values.append(float(from_minor(minor, currency)))
     if labels:
-        pie = px.pie(names=labels, values=values, title=f"{currency} share of net expense")
-        st.plotly_chart(pie, width="stretch")
+        pie = px.pie(names=labels, values=values, title=f"{currency} share of net expense", color_discrete_sequence=CHART_SERIES, height=340)
+        st.plotly_chart(polish_chart(pie), width="stretch")
     else:
         st.info(f"{currency} has no positive net expense in this filter, so there is no pie chart.")
     if not summary.periods:
@@ -548,13 +595,14 @@ def render_charts(summary) -> None:
     income = [float(from_minor(value, currency)) for value in summary.period_income]
     net_expense = [float(from_minor(value, currency)) for value in summary.period_net_expense]
     bar = go.Figure()
-    bar.add_bar(name="Income", x=summary.periods, y=income)
-    bar.add_bar(name="Net expense", x=summary.periods, y=net_expense)
-    bar.update_layout(barmode="group", title=f"{currency} income and net expense")
-    st.plotly_chart(bar, width="stretch")
+    bar.add_bar(name="Income", x=summary.periods, y=income, marker_color=CHART_ACCENT)
+    bar.add_bar(name="Net expense", x=summary.periods, y=net_expense, marker_color=CHART_INK)
+    bar.update_layout(barmode="group", title=f"{currency} income and net expense", height=340)
+    st.plotly_chart(polish_chart(bar), width="stretch")
     line = px.line(x=summary.periods, y=net_expense, markers=True, title=f"{currency} net expense trend")
-    line.update_layout(xaxis_title="Period", yaxis_title=currency)
-    st.plotly_chart(line, width="stretch")
+    line.update_traces(line_color=CHART_ACCENT, marker_color=CHART_INK)
+    line.update_layout(xaxis_title="Period", yaxis_title=currency, height=340)
+    st.plotly_chart(polish_chart(line), width="stretch")
 
 
 def _queue_item(draft: TransactionDraft) -> dict:
@@ -721,7 +769,7 @@ def page_dashboard(service: FinanceService) -> None:
             ("Balance", summary.balance_minor),
         ]
         for column, (label, minor) in zip(columns, values):
-            column.metric(label, format_money(minor, summary.currency))
+            column.metric(label, format_amount(minor, summary.currency))
         render_charts(summary)
     st.subheader("Recent transactions")
     recent = service.list_transaction_rows(
@@ -817,7 +865,7 @@ def page_history(service: FinanceService) -> None:
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state.flash = f"Restored transaction {selected['id']}。"
+                st.session_state.flash = f"Restored transaction {selected['id']}."
                 st.rerun()
         return
     st.subheader("Edit transaction")
@@ -862,7 +910,7 @@ def page_history(service: FinanceService) -> None:
         except (ValueError, KeyError) as exc:
             st.error(str(exc))
         else:
-            st.session_state.flash = f"Updated transaction {selected['id']}。"
+            st.session_state.flash = f"Updated transaction {selected['id']}."
             st.rerun()
     confirmed = st.checkbox("I confirm that I want to delete this transaction", key=f"delete_confirm_{selected['id']}")
     if st.button("Delete transaction", key=f"delete_{selected['id']}"):
@@ -1022,16 +1070,15 @@ def cached_text_model_status(host: str, text_model: str) -> tuple[str, str]:
 
 
 def render_sidebar() -> str:
-    st.sidebar.title("Local ledger")
-    st.sidebar.caption("The ledger is stored in SQLite on this computer. There is no paid cloud database.")
+    st.sidebar.markdown('<p class="mark">Local ledger</p><p class="mark-note">Kept on this computer.</p>', unsafe_allow_html=True)
     settings = current_settings()
     status, detail = cached_text_model_status(settings.ollama_host, settings.text_model)
     if status == "error":
-        st.sidebar.error("Ollama is not connected. Ordinary sentences still use the rules. Receipts need Ollama.")
+        st.sidebar.caption("Ollama is offline. Rules still parse sentences.")
     elif status == "ok":
-        st.sidebar.success(f"Text model installed: {detail}")
+        st.sidebar.caption(f"Text model ready. {detail}")
     else:
-        st.sidebar.warning(f"Text model not found on this computer: {detail}. Simple sentences still use the rules.")
+        st.sidebar.caption(f"Text model missing: {detail}. Rules still parse sentences.")
     return st.sidebar.radio(
         "Pages",
         ["Overview", "Assistant", "Add transaction", "Transactions", "Budgets", "Settings"],
@@ -1039,7 +1086,8 @@ def render_sidebar() -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Local ledger", page_icon="📒", layout="wide")
+    st.set_page_config(page_title="Local ledger", page_icon=str(ROOT / "assets" / "app.ico"), layout="wide")
+    apply_theme()
     ensure_state()
     service = get_service()
     show_flash()
