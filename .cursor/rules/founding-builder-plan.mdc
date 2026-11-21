@@ -1,0 +1,67 @@
+---
+description: Confirm Ledger Founding Builder plan. When the user asks about the plan, the grant, MAU, next steps, or how to introduce the app to someone, answer from this file.
+alwaysApply: true
+---
+
+# Confirm Ledger plan
+
+When the user asks about the plan, the grant, MAU, next steps, or how to introduce the app to someone, answer from this file in Simplified Chinese. Do not invent a new plan. Change this file only when the user changes the plan.
+
+## Status as of 2026-11-21
+
+- App: Confirm Ledger, slug `confirm-ledger`, handle `@epostchiu`, app id 955. Code lives in `C:\Users\chits\ai-finance-anna`.
+- Do not modify `C:\Users\chits\ai-finance-agent` except this rule file.
+- v0.1.1 is `pending_review`. Do not cut a version or run `apps release` until review approves.
+- Review mail goes to epostchiu@gmail.com from dev@anna.partners, often on Monday or Thursday.
+- Runs from epostchiu@gmail.com do not count as Qualified MAU.
+
+## Goal
+
+December 2026, after approval and publish: 200 Qualified MAU. That is Tier E, $50 per month. November is not a counting month. The September launch boost is over. One grant per builder per month.
+
+## What counts
+
+A signed-in Anna user who is not the developer opens Marketplace Confirm Ledger, types an English sentence such as `Spent 200 NOK on groceries` on Assistant, and the model returns a draft. Opening, installing, or saving without a model draft does not count. The parser accepts English and Norwegian currency words only, not Chinese sentences.
+
+## Until the review result
+
+Do not change the version. Prepare only, with no code changes:
+
+- A short English description: draft first, confirm before save, large-expense alert, spending analysis and next-period budget suggestions.
+- Three new screenshots: the voice button, a 350 NOK expense over a 100 NOK warning, and the spending analysis. The store still has the old 0.1.0 shots.
+- One fixed trial line: sign in to Anna, open Confirm Ledger, type `Spent 200 NOK on groceries`, wait until the draft appears.
+
+## Introducing the app
+
+People reach the app through a link the user sends. When the user wants to introduce Confirm Ledger, give this link and these steps.
+
+Install link, only after the app is published:
+
+`https://anna.partners/store/@epostchiu/confirm-ledger?action=install`
+
+Steps to tell the other person:
+
+1. Open the link.
+2. Sign in to Anna, or create an account.
+3. Install Confirm Ledger.
+4. On Assistant, type `Spent 200 NOK on groceries`.
+5. Wait until a draft appears.
+
+Before publish, say the link is not live yet. On 2026-11-21 the store page returned 404 because v0.1.1 was still pending review. Do not tell the user to send the link until the app is published.
+
+## Publish day
+
+Release only after approval. Open the store page. Run the trial line on a non-developer account. Share the install link only after a draft appears.
+
+## December
+
+- Dec 1–7: friends and colleagues who already have, or will create, an Anna account. Each person needs one successful draft. Post in English on personal-finance and budget Reddit, LinkedIn, and Discords that allow promotion. Include the store link and the trial line. Do not lead with Chinese communities until Chinese sentences work.
+- Dec 8: read Developer Console. About 7 new qualified users per day are required to reach 200. If the pace is slower, widen channels that already work. Do not buy runs or trade empty runs. Friends alone will not reach 200.
+
+## After 200 in December
+
+Payout is usually within 30 days after month-end, after Anna's check. From the qualifying month, ship one real improvement each calendar month. The first improvement is Chinese sentences, for example `今天在 Kiwi 花了 350 克朗`.
+
+## When the review mail arrives
+
+Approved: publish, then draft the promotion copy when asked. Rejected: fix the points in the mail and resubmit. Do not release before approval.
