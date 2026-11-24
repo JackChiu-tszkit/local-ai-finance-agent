@@ -11,7 +11,7 @@ When the user asks about the plan, the grant, MAU, next steps, or how to introdu
 
 - App: Confirm Ledger, slug `confirm-ledger`, handle `@epostchiu`, app id 955. Code lives in `C:\Users\chits\ai-finance-anna`.
 - Do not modify `C:\Users\chits\ai-finance-agent` except this rule file.
-- v0.1.1 is `pending_review`. Do not cut a version or run `apps release` until review approves.
+- v0.1.2 is cut (version_id 2895) and not submitted. It deepens the spending briefing after the second rejection. Status on Anna remains rejected until `apps submit-review`. Do not run `apps release` until review approves.
 - Review mail goes to epostchiu@gmail.com from dev@anna.partners, often on Monday or Thursday.
 - Runs from epostchiu@gmail.com do not count as Qualified MAU.
 
